@@ -1,0 +1,2 @@
+To generate documentation, install python-sphinx and run
+$ make html

@@ -1,0 +1,5 @@
+#ifndef EGALITO_ELF_SHAREDLIB_H
+#define EGALITO_ELF_SHAREDLIB_H
+
+
+#endif

@@ -1,0 +1,22 @@
+jump table in [__parse_one_specwc] has 56 entries
+jump table in [__parse_one_specmb] has 56 entries
+jump table in [_IO_vfscanf_internal] has 84 entries
+jump table in [_IO_vfscanf_internal] has 84 entries
+jump table in [_IO_vfscanf_internal] has 84 entries
+jump table in [_IO_vfwscanf] has 84 entries
+jump table in [_IO_vfwscanf] has 84 entries
+jump table in [_IO_vfwscanf] has 84 entries
+jump table in [__gettextparse] has 125 entries
+jump table in [__strftime_internal] has 123 entries
+jump table in [__strptime_internal] has 86 entries
+jump table in [__pathconf] has 21 entries
+jump table in [__fpathconf] has 21 entries
+jump table in [__sysconf] has 247 entries
+jump table in [peek_token] has 87 entries
+jump table in [parse_expression] has 36 entries
+#
+# hand crafted jumptables
+#
+jump table in [printf_positional] has 30 entries
+jump table in [vfprintf] has 30 entries
+jump table in [vfwprintf] has 30 entries

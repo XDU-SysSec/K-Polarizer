@@ -1,0 +1,5 @@
+nginx-1.11.3/Makefile
+nginx-1.11.3/objs/
+nginx-1.11.3/src/.gdb_history
+nginx-1.11.3/src/cscope.out
+nginx/

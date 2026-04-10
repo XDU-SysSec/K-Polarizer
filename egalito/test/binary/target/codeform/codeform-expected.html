@@ -1,0 +1,2193 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html><head><title>codeform</title></head><body><pre>
+<font color="darkgreen">/*! \mainpage
+
+    codeform, a code formatter and colourer [intended] for C and C++ \n
+    Copyright (C) 2007 DWK
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+    The GNU General Public License version 2 is included in the file COPYING.
+
+    \author DWK
+        dwks@theprogrammingsite.com \n
+        http://dwks.theprogrammingsite.com/ \n
+
+    \version 1.2.0
+
+    At the time of this writing, codeform is available at:
+        http://dwks.theprogrammingsite.com/myprogs/codeform.htm
+*/</font>
+
+<font color="darkgreen">/*! \file codeform.c
+
+    The one and only source file for codeform.
+
+    This source file compiles without warnings with GCC 2.95.2 and 3.3.3: \n
+        $ gcc -W -Wall -ansi -pedantic -O2 -g -o codeform codeform.c
+*/</font>
+
+<font color="green">#include &lt;stdio.h&gt;</font>
+<font color="green">#include &lt;stddef.h&gt;</font>
+<font color="green">#include &lt;stdlib.h&gt;</font>
+<font color="green">#include &lt;string.h&gt;</font>
+<font color="green">#include &lt;ctype.h&gt;</font>
+
+<font color="darkgreen">/*! Version of codeform. */</font>
+<font color="green">#define VERSION "codeform version 1.2.0 by DWK"</font>
+
+<font color="darkgreen">/*! An array of strings. Stores the length of each string. */</font>
+<font color="blue">struct</font> strings_t <font color="darkred">{</font>
+    <font color="blue">char</font> <font color="red">**</font>data;
+    <font color="darkblue">size_t</font> <font color="red">*</font>len;
+    <font color="darkblue">size_t</font> number;
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! The type of a rule. */</font>
+<font color="blue">enum</font> type_t <font color="darkred">{</font>
+    TYPE_KEYWORD,
+    TYPE_MIDWORD,
+    TYPE_COMMENT,
+    TYPE_STRING,
+    TYPE_NESTCOM,
+    TYPE_NUMBER,
+    TYPE_FPNUMBER,
+    TYPE_START,
+    TYPE_END,
+    TYPES,  <font color="darkgreen">/*!&lt; Number of values for \c type_t (this enum). */</font>
+    TYPE_ERROR = -<font color="blue">1</font>
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! Flag values to indicate the position in the current file (can be OR'd
+    together).
+*/</font>
+<font color="blue">enum</font> pos_t <font color="darkred">{</font>
+    POS_START = <font color="blue">1</font>,
+    POS_END = <font color="blue">2</font>
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! File names passed to the program on the command line. */</font>
+<font color="blue">struct</font> argument_t <font color="darkred">{</font>
+    <font color="blue">struct</font> strings_t inputfn, outputfn, rulefn, ilrule;
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! A rule, containing sections and a type. */</font>
+<font color="blue">struct</font> onerule_t <font color="darkred">{</font>
+    <font color="blue">struct</font> strings_t data;  <font color="darkgreen">/*!&lt; The data for the rule. */</font>
+
+    <font color="darkblue">size_t</font> type;  <font color="darkgreen">/*!&lt; Type of the rule (type_func number). */</font>
+
+    <font color="darkblue">size_t</font> prev;  <font color="darkgreen">/*!&lt; Rule starting with the same as this one. */</font>
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! A pointer to the previous rule parsed (for '*' sections). */</font>
+<font color="blue">struct</font> prevrule_t <font color="darkred">{</font>
+    <font color="blue">enum</font> type_t type;        <font color="green">/* The current header type. */</font>
+    <font color="blue">struct</font> onerule_t <font color="red">*</font>one;   <font color="green">/* The current rule being parsed. */</font>
+    <font color="blue">struct</font> onerule_t <font color="red">*</font>prev;  <font color="green">/* The previous rule. */</font>
+    <font color="green">/* True if prev is the only pointer to a dynamically allocated structure,
+        and so needs freeing. */</font>
+    <font color="blue">int</font> freep;
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! A variable. */</font>
+<font color="blue">struct</font> onevar_t <font color="darkred">{</font>
+    <font color="green">/* The name of the variable and the text to replace it with. */</font>
+    <font color="blue">char</font> <font color="red">*</font>from, <font color="red">*</font>to;
+    <font color="darkblue">size_t</font> flen, tlen;  <font color="green">/* The length of \c from and \c to. */</font>
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! Array of all the rules. */</font>
+<font color="blue">struct</font> ruledata_t <font color="darkred">{</font>
+    <font color="blue">struct</font> onerule_t <font color="red">**</font>data;
+    <font color="darkblue">size_t</font> number;
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! List of type_func functions, representing which comments the parser is
+    inside. Since comments can be nested, it stores a list of function numbers.
+*/</font>
+<font color="blue">struct</font> funclist_t <font color="darkred">{</font>
+    <font color="darkblue">size_t</font> <font color="red">*</font>which;
+    <font color="blue">enum</font> type_t <font color="red">*</font>type;
+    <font color="darkblue">size_t</font> number;
+
+    <font color="green">/* True if the current comment supports nesting of other comments inside it. */</font>
+    <font color="blue">int</font> nest;
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! The previous tag, its beginning and end. */</font>
+<font color="blue">struct</font> rulelist_t <font color="darkred">{</font>
+    <font color="blue">const char</font> <font color="red">*</font>from, <font color="red">*</font>to;
+    <font color="blue">char</font> <font color="red">*</font>ws;
+    <font color="darkblue">size_t</font> wslen;
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! Structure passed to the type_func functions, containing all of the non-rule
+    related data they might need.
+*/</font>
+<font color="blue">struct</font> typefunc_t <font color="darkred">{</font>
+    <font color="darkblue">FILE</font> <font color="red">*</font>out;  <font color="green">/* Output file stream to write data to. */</font>
+    <font color="blue">char</font> <font color="red">**</font>p;  <font color="green">/* Pointer to the current position in the string. */</font>
+    <font color="blue">int</font> iw;  <font color="green">/* True if the previous character was a word character. */</font>
+    <font color="blue">enum</font> pos_t pos;  <font color="green">/* Flags for the beginning and end of the file. */</font>
+    <font color="darkblue">size_t</font> n;  <font color="green">/* Character count from the beginning of the string. */</font>
+    <font color="darkblue">size_t</font> number;  <font color="green">/* Element in ruledata_t that the rule is. */</font>
+    <font color="blue">enum</font> type_t type;  <font color="green">/* The type of rule. */</font>
+
+    <font color="blue">struct</font> funclist_t func;  <font color="green">/* List of nested comments. */</font>
+    <font color="blue">struct</font> rulelist_t <font color="red">*</font>list;  <font color="green">/* The previous tag. */</font>
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! A rule type. */</font>
+<font color="blue">struct</font> ruletype_t <font color="darkred">{</font>
+    <font color="blue">const char</font> <font color="red">*</font>name;  <font color="green">/* The name of this type of rule. */</font>
+    <font color="darkblue">size_t</font> sort;  <font color="green">/* The part to sort by. */</font>
+    <font color="blue">int</font> parts, xparts;  <font color="green">/* Minimum parts, and optional extra parts. */</font>
+
+    <font color="green">/* A pointer to the function that handles this type of rule. */</font>
+    <font color="blue">int</font> <font color="darkred">(</font><font color="red">*</font>func<font color="darkred">)(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! Array of variables. */</font>
+<font color="blue">struct</font> rulevars_t <font color="darkred">{</font>
+    <font color="blue">struct</font> onevar_t <font color="red">**</font>data;
+    <font color="darkblue">size_t</font> number;
+<font color="darkred">}</font>;
+
+<font color="darkgreen">/*! Base rules structure, containing types, rules, and variables. */</font>
+<font color="blue">struct</font> rules_t <font color="darkred">{</font>
+    <font color="blue">struct</font> ruletype_t type<font color="darkred">[</font>TYPES<font color="darkred">]</font>;
+    <font color="blue">struct</font> rulevars_t vars;
+    <font color="blue">struct</font> rulelist_t list;
+    <font color="blue">struct</font> ruledata_t data;
+    <font color="blue">struct</font> onerule_t <font color="red">*</font>cdat<font color="darkred">[</font>TYPES<font color="darkred">]</font>;
+    <font color="blue">struct</font> prevrule_t pr;
+<font color="darkred">}</font>;
+
+<font color="green">/*----------------------*\
+ | Function prototypes. |
+\*----------------------*/</font>
+
+<font color="blue">void</font> parse_arguments<font color="darkred">(</font><font color="blue">int</font> argc, <font color="blue">char</font> <font color="red">*</font>argv<font color="darkred">[]</font>, <font color="blue">struct</font> argument_t <font color="red">*</font>arg<font color="darkred">)</font>;
+<font color="blue">void</font> add_string<font color="darkred">(</font><font color="blue">struct</font> strings_t <font color="red">*</font>data, <font color="blue">const char</font> <font color="red">*</font>str<font color="darkred">)</font>;
+<font color="blue">void</font> add_string_len<font color="darkred">(</font><font color="blue">struct</font> strings_t <font color="red">*</font>data, <font color="blue">const char</font> <font color="red">*</font>str, <font color="darkblue">size_t</font> len<font color="darkred">)</font>;
+<font color="blue">void</font> add_string_copy<font color="darkred">(</font><font color="blue">struct</font> strings_t <font color="red">*</font>data, <font color="blue">const struct</font> strings_t <font color="red">*</font>prev<font color="darkred">)</font>;
+<font color="blue">void</font> shrink_string<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>str, <font color="darkblue">size_t</font> len<font color="darkred">)</font>;
+<font color="blue">int</font> check_usage<font color="darkred">(</font><font color="blue">int</font> argc, <font color="blue">char</font> <font color="red">*</font>argv<font color="darkred">[])</font>;
+<font color="blue">void</font> print_usage<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>progname<font color="darkred">)</font>;
+<font color="blue">void</font> print_version<font color="darkred">(</font><font color="blue">void</font><font color="darkred">)</font>;
+<font color="blue">void</font> out_of_memory<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>file, <font color="blue">int</font> line<font color="darkred">)</font>;
+<font color="blue">void</font> free_ruledata<font color="darkred">(</font><font color="blue">const struct</font> ruledata_t <font color="red">*</font>ruledata<font color="darkred">)</font>;
+<font color="blue">void</font> free_rulecdat<font color="darkred">(</font><font color="blue">const struct</font> rules_t <font color="red">*</font>rules<font color="darkred">)</font>;
+<font color="blue">void</font> free_onerule<font color="darkred">(</font><font color="blue">const struct</font> ruledata_t <font color="red">*</font>ruledata, <font color="darkblue">size_t</font> which<font color="darkred">)</font>;
+<font color="blue">void</font> free_strings<font color="darkred">(</font><font color="blue">const struct</font> strings_t <font color="red">*</font>strings<font color="darkred">)</font>;
+<font color="blue">void</font> free_dup_onerule<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">const struct</font> onerule_t <font color="red">*</font>prev<font color="darkred">)</font>;
+<font color="blue">void</font> free_rulevars<font color="darkred">(</font><font color="blue">const struct</font> rulevars_t <font color="red">*</font>rulevars<font color="darkred">)</font>;
+<font color="blue">void</font> free_onevar<font color="darkred">(</font><font color="blue">const struct</font> onevar_t <font color="red">*</font>var<font color="darkred">)</font>;
+<font color="blue">void</font> free_argument<font color="darkred">(</font><font color="blue">const struct</font> argument_t <font color="red">*</font>argument<font color="darkred">)</font>;
+<font color="blue">void</font> free_prevrule<font color="darkred">(</font><font color="blue">struct</font> prevrule_t <font color="red">*</font>pr<font color="darkred">)</font>;
+
+<font color="darkblue">FILE</font> <font color="red">*</font>open_file<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>fn, <font color="blue">const char</font> <font color="red">*</font>mode<font color="darkred">)</font>;
+<font color="darkblue">size_t</font> get_string<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>line, <font color="darkblue">size_t</font> len, <font color="darkblue">size_t</font> <font color="red">*</font>alen, <font color="darkblue">FILE</font> <font color="red">*</font>fp<font color="darkred">)</font>;
+<font color="blue">void</font> load_rules<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const struct</font> strings_t <font color="red">*</font>rulefn<font color="darkred">)</font>;
+<font color="blue">void</font> add_ilrules<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const struct</font> strings_t <font color="red">*</font>ilrule<font color="darkred">)</font>;
+<font color="blue">void</font> add_rules_file_dir<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>fn,
+    <font color="blue">const char</font> <font color="red">*</font>dir<font color="darkred">)</font>;
+<font color="blue">void</font> add_rules_file<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>fn<font color="darkred">)</font>;
+<font color="blue">void</font> add_rule_var<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">char</font> <font color="red">*</font>str, <font color="blue">const char</font> <font color="red">*</font>file,
+    <font color="blue">int</font> line<font color="darkred">)</font>;
+<font color="blue">void</font> add_var<font color="darkred">(</font><font color="blue">struct</font> rulevars_t <font color="red">*</font>vars, <font color="blue">char</font> <font color="red">*</font>str, <font color="blue">char</font> <font color="red">*</font>eq<font color="darkred">)</font>;
+<font color="blue">int</font> find_var_pos<font color="darkred">(</font><font color="blue">struct</font> rulevars_t <font color="red">*</font>vars, <font color="blue">const char</font> <font color="red">*</font>p, <font color="darkblue">size_t</font> <font color="red">*</font>pos<font color="darkred">)</font>;
+<font color="blue">int</font> add_rule_type<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">enum</font> type_t <font color="red">*</font>t, <font color="blue">char</font> <font color="red">**</font>str,
+    <font color="blue">const char</font> <font color="red">*</font>file, <font color="blue">int</font> line<font color="darkred">)</font>;
+<font color="blue">int</font> add_rule_pos<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="darkblue">size_t</font> rsort, <font color="blue">struct</font> onerule_t <font color="red">*</font>one<font color="darkred">)</font>;
+<font color="blue">struct</font> onerule_t <font color="red">*</font>rule_new<font color="darkred">(</font><font color="blue">void</font><font color="darkred">)</font>;
+<font color="blue">void</font> add_rule_new<font color="darkred">(</font><font color="blue">struct</font> ruledata_t <font color="red">*</font>rd<font color="darkred">)</font>;
+<font color="blue">void</font> add_rule<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">char</font> <font color="red">*</font>str, <font color="blue">const char</font> <font color="red">*</font>file, <font color="blue">int</font> line<font color="darkred">)</font>;
+<font color="blue">int</font> add_allocated_rule<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">struct</font> onerule_t <font color="red">**</font>cdat,
+    <font color="darkblue">size_t</font> sort<font color="darkred">)</font>;
+<font color="blue">void</font> add_parts<font color="darkred">(</font><font color="blue">struct</font> strings_t <font color="red">*</font>data, <font color="blue">const struct</font> strings_t <font color="red">*</font>prev,
+    <font color="blue">const char</font> <font color="red">*</font>str<font color="darkred">)</font>;
+<font color="blue">int</font> check_parts<font color="darkred">(</font><font color="blue">int</font> rparts, <font color="blue">int</font> xparts, <font color="blue">const char</font> <font color="red">*</font>str<font color="darkred">)</font>;
+<font color="blue">void</font> process_escapes<font color="darkred">(</font><font color="blue">struct</font> strings_t <font color="red">*</font>data<font color="darkred">)</font>;
+<font color="blue">void</font> remove_escapes<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>str, <font color="darkblue">size_t</font> <font color="red">*</font>len<font color="darkred">)</font>;
+<font color="blue">void</font> process_vars<font color="darkred">(</font><font color="blue">const struct</font> rulevars_t <font color="red">*</font>vars, <font color="blue">struct</font> strings_t <font color="red">*</font>data<font color="darkred">)</font>;
+<font color="blue">void</font> replace_var_str<font color="darkred">(</font><font color="blue">const struct</font> rulevars_t <font color="red">*</font>vars, <font color="blue">char</font> <font color="red">**</font>str<font color="darkred">)</font>;
+<font color="blue">void</font> resize_var_string<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>str, <font color="blue">char</font> <font color="red">**</font>pos, <font color="darkblue">size_t</font> len<font color="darkred">)</font>;
+<font color="blue">void</font> find_var_replace<font color="darkred">(</font><font color="blue">const struct</font> rulevars_t <font color="red">*</font>vars, <font color="blue">char</font> <font color="red">**</font>str, <font color="blue">char</font> <font color="red">**</font>p,
+    <font color="blue">char</font> <font color="red">*</font>end<font color="darkred">)</font>;
+<font color="blue">int</font> replace_onevar<font color="darkred">(</font><font color="blue">const struct</font> onevar_t <font color="red">*</font>var, <font color="blue">char</font> <font color="red">**</font>str, <font color="blue">char</font> <font color="red">**</font>pos,
+    <font color="blue">char</font> <font color="red">*</font>end<font color="darkred">)</font>;
+<font color="blue">void</font> replace_novar<font color="darkred">(</font><font color="darkblue">size_t</font> cp, <font color="blue">char</font> <font color="red">**</font>str, <font color="blue">char</font> <font color="red">**</font>pos<font color="darkred">)</font>;
+<font color="darkblue">size_t</font> get_type<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>str, <font color="blue">enum</font> type_t <font color="red">*</font>type<font color="darkred">)</font>;
+
+<font color="blue">void</font> parse_files<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">struct</font> strings_t <font color="red">*</font>inputfn,
+    <font color="blue">struct</font> strings_t <font color="red">*</font>outputfn<font color="darkred">)</font>;
+<font color="blue">void</font> read_file<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>fn, <font color="darkblue">FILE</font> <font color="red">*</font>out<font color="darkred">)</font>;
+<font color="blue">void</font> parse_line<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">char</font> <font color="red">*</font>line, <font color="darkblue">FILE</font> <font color="red">*</font>out,
+    <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> call_one_type<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> call_type_cdat<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> call_type_funcs<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">void</font> set_rules_prev<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules<font color="darkred">)</font>;
+<font color="blue">void</font> set_follow_prev<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="darkblue">size_t</font> start<font color="darkred">)</font>;
+<font color="blue">int</font> find_rule_match<font color="darkred">(</font><font color="blue">const struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>p, <font color="darkblue">size_t</font> <font color="red">*</font>pos<font color="darkred">)</font>;
+<font color="blue">int</font> find_rule_new<font color="darkred">(</font><font color="blue">const struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>p, <font color="darkblue">size_t</font> <font color="red">*</font>pos<font color="darkred">)</font>;
+<font color="blue">int</font> find_rule_prev<font color="darkred">(</font><font color="blue">const struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>p, <font color="darkblue">size_t</font> <font color="red">*</font>pos<font color="darkred">)</font>;
+<font color="blue">void</font> copy_file<font color="darkred">(</font><font color="darkblue">FILE</font> <font color="red">*</font>from, <font color="blue">const char</font> <font color="red">*</font>fn<font color="darkred">)</font>;
+
+<font color="blue">int</font> is_number<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>p<font color="darkred">)</font>;
+<font color="blue">int</font> is_fpnumber<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>p<font color="darkred">)</font>;
+<font color="blue">void</font> print_number<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>p, <font color="darkblue">FILE</font> <font color="red">*</font>out<font color="darkred">)</font>;
+<font color="blue">int</font> is_word<font color="darkred">(</font><font color="blue">int</font> c<font color="darkred">)</font>;
+<font color="blue">int</font> is_backslashed<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>start, <font color="blue">const char</font> <font color="red">*</font>p<font color="darkred">)</font>;
+<font color="blue">void</font> remove_char<font color="darkred">(</font><font color="blue">char</font> <font color="red">*</font>p<font color="darkred">)</font>;
+<font color="blue">int</font> is_word<font color="darkred">(</font><font color="blue">int</font> c<font color="darkred">)</font>;
+<font color="blue">int</font> is_word_prev<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>line, <font color="blue">const char</font> <font color="red">*</font>p<font color="darkred">)</font>;
+<font color="blue">void</font> remove_comments<font color="darkred">(</font><font color="blue">char</font> <font color="red">*</font>s<font color="darkred">)</font>;
+<font color="blue">char</font> <font color="red">*</font>is_var<font color="darkred">(</font><font color="blue">char</font> <font color="red">*</font>s<font color="darkred">)</font>;
+<font color="blue">int</font> is_current_dir<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>s<font color="darkred">)</font>;
+<font color="blue">void</font> print_chars<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>p, <font color="darkblue">size_t</font> len, <font color="darkblue">FILE</font> <font color="red">*</font>out<font color="darkred">)</font>;
+<font color="blue">void</font> add_to_funclist<font color="darkred">(</font><font color="blue">struct</font> funclist_t <font color="red">*</font>func, <font color="darkblue">size_t</font> which, <font color="blue">enum</font> type_t type<font color="darkred">)</font>;
+<font color="blue">void</font> remove_from_funclist<font color="darkred">(</font><font color="blue">struct</font> funclist_t <font color="red">*</font>func<font color="darkred">)</font>;
+<font color="blue">void</font> add_ws_rulelist<font color="darkred">(</font><font color="blue">struct</font> rulelist_t <font color="red">*</font>list, <font color="blue">char</font> c<font color="darkred">)</font>;
+<font color="blue">void</font> print_ws_rulelist<font color="darkred">(</font><font color="blue">struct</font> rulelist_t <font color="red">*</font>list, <font color="darkblue">FILE</font> <font color="red">*</font>out<font color="darkred">)</font>;
+<font color="blue">void</font> append_rulelist<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>from, <font color="blue">const char</font> <font color="red">*</font>to, <font color="blue">struct</font> rulelist_t <font color="red">*</font>list,
+    <font color="darkblue">FILE</font> <font color="red">*</font>out<font color="darkred">)</font>;
+<font color="blue">void</font> chomp_newline<font color="darkred">(</font><font color="blue">char</font> <font color="red">*</font>str, <font color="darkblue">size_t</font> <font color="red">*</font>flen<font color="darkred">)</font>;
+
+<font color="blue">int</font> type_keyword<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> type_midword<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> type_comment_end<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> type_comment<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> type_string<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> type_nestcom<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> type_number<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> type_fpnumber<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> type_start<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+<font color="blue">int</font> type_end<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">)</font>;
+
+<font color="green">/*------------*\
+ | Functions. |
+\*------------*/</font>
+
+<font color="darkgreen">/*! Program entry point. Acts as a driver function, calling other functions.
+    \param argc Number of arguments passed to the program.
+    \param argv Array of command-line arguments, including program name.
+    \return Always returns 0, indicating success.
+*/</font>
+<font color="blue">int</font> main<font color="darkred">(</font><font color="blue">int</font> argc, <font color="blue">char</font> <font color="red">*</font>argv<font color="darkred">[]) {</font>
+    <font color="blue">struct</font> argument_t arg = <font color="darkred">{</font>
+        <font color="darkred">{</font><font color="blue">0</font>, <font color="blue">0</font>, <font color="blue">0</font><font color="darkred">}</font>,
+        <font color="darkred">{</font><font color="blue">0</font>, <font color="blue">0</font>, <font color="blue">0</font><font color="darkred">}</font>,
+        <font color="darkred">{</font><font color="blue">0</font>, <font color="blue">0</font>, <font color="blue">0</font><font color="darkred">}</font>,
+        <font color="darkred">{</font><font color="blue">0</font>, <font color="blue">0</font>, <font color="blue">0</font><font color="darkred">}</font>
+    <font color="darkred">}</font>;
+    <font color="blue">struct</font> rules_t rules = <font color="darkred">{</font>
+        <font color="darkred">{</font>
+            <font color="darkred">{</font><font color="red">"keyword"</font>, <font color="blue">0</font>, <font color="blue">3</font>, <font color="blue">1</font>, type_keyword<font color="darkred">}</font>,
+            <font color="darkred">{</font><font color="red">"midword"</font>, <font color="blue">0</font>, <font color="blue">3</font>, <font color="blue">1</font>, type_midword<font color="darkred">}</font>,
+            <font color="darkred">{</font><font color="red">"comment"</font>, <font color="blue">0</font>, <font color="blue">3</font>, <font color="blue">1</font>, type_comment<font color="darkred">}</font>,
+            <font color="darkred">{</font><font color="red">"string"</font>, <font color="blue">0</font>, <font color="blue">3</font>, <font color="blue">1</font>, type_string<font color="darkred">}</font>,
+            <font color="darkred">{</font><font color="red">"nestcom"</font>, <font color="blue">0</font>, <font color="blue">3</font>, <font color="blue">1</font>, type_nestcom<font color="darkred">}</font>,
+            <font color="darkred">{</font><font color="red">"number"</font>, <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>, <font color="blue">2</font>, <font color="blue">0</font>, type_number<font color="darkred">}</font>,
+            <font color="darkred">{</font><font color="red">"fpnumber"</font>, <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>, <font color="blue">2</font>, <font color="blue">0</font>, type_fpnumber<font color="darkred">}</font>,
+            <font color="darkred">{</font><font color="red">"start"</font>, <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>, <font color="blue">1</font>, <font color="blue">0</font>, type_start<font color="darkred">}</font>,
+            <font color="darkred">{</font><font color="red">"end"</font>, <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>, <font color="blue">1</font>, <font color="blue">0</font>, type_end<font color="darkred">}</font>,
+        <font color="darkred">}</font>,
+        <font color="darkred">{</font><font color="blue">0</font>, <font color="blue">0</font><font color="darkred">}</font>,
+        <font color="darkred">{</font><font color="blue">0</font>, <font color="blue">0</font>, <font color="blue">0</font>, <font color="blue">0</font><font color="darkred">}</font>,
+        <font color="darkred">{</font><font color="blue">0</font>, <font color="blue">0</font><font color="darkred">}</font>,
+        <font color="darkred">{</font><font color="blue">0</font><font color="darkred">}</font>,
+        <font color="darkred">{</font>TYPE_ERROR, <font color="blue">0</font>, <font color="blue">0</font>, <font color="blue">0</font><font color="darkred">}</font>
+    <font color="darkred">}</font>;  <font color="green">/* The only instance of the structure \c rules_t. */</font>
+
+    <font color="blue">if</font><font color="darkred">(</font>check_usage<font color="darkred">(</font>argc, argv<font color="darkred">))</font> <font color="blue">return 0</font>;
+
+    parse_arguments<font color="darkred">(</font>argc, argv, <font color="red">&amp;</font>arg<font color="darkred">)</font>;
+
+    add_ilrules<font color="darkred">(</font><font color="red">&amp;</font>rules, <font color="red">&amp;</font>arg.ilrule<font color="darkred">)</font>;
+    load_rules<font color="darkred">(</font><font color="red">&amp;</font>rules, <font color="red">&amp;</font>arg.rulefn<font color="darkred">)</font>;
+    set_rules_prev<font color="darkred">(</font><font color="red">&amp;</font>rules<font color="darkred">)</font>;
+
+    parse_files<font color="darkred">(</font><font color="red">&amp;</font>rules, <font color="red">&amp;</font>arg.inputfn, <font color="red">&amp;</font>arg.outputfn<font color="darkred">)</font>;
+
+    <font color="green">/* Free all allocated memory. */</font>
+
+    free_ruledata<font color="darkred">(</font><font color="red">&amp;</font>rules.data<font color="darkred">)</font>;
+    free_rulecdat<font color="darkred">(</font><font color="red">&amp;</font>rules<font color="darkred">)</font>;
+    free_rulevars<font color="darkred">(</font><font color="red">&amp;</font>rules.vars<font color="darkred">)</font>;
+    free_prevrule<font color="darkred">(</font><font color="red">&amp;</font>rules.pr<font color="darkred">)</font>;
+    free_argument<font color="darkred">(</font><font color="red">&amp;</font>arg<font color="darkred">)</font>;
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Parses the command-line parameters passed to codeform on the command line.
+    Stores the results in \a arg.
+    \param argc Number of arguments passed to the program.
+    \param argv Array of command-line arguments, including executable name.
+    \param arg The structure to store the arguments in.
+*/</font>
+<font color="blue">void</font> parse_arguments<font color="darkred">(</font><font color="blue">int</font> argc, <font color="blue">char</font> <font color="red">*</font>argv<font color="darkred">[]</font>, <font color="blue">struct</font> argument_t <font color="red">*</font>arg<font color="darkred">) {</font>
+    <font color="blue">struct</font> strings_t <font color="red">*</font>p;
+    <font color="blue">int</font> x;
+
+    <font color="green">/* Parse command-line parameters. */</font>
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">1</font>; x &lt; argc; x ++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!strcmp<font color="darkred">(</font>argv<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">"--"</font><font color="darkred">)) {</font>  <font color="green">/* End of arguments. */</font>
+            x ++;
+            <font color="blue">break</font>;
+        <font color="darkred">}</font>
+        <font color="blue">else if</font><font color="darkred">(</font>!strcmp<font color="darkred">(</font>argv<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">"-e"</font><font color="darkred">))</font> p = <font color="red">&amp;</font>arg-&gt;ilrule;  <font color="green">/* Inline rule. */</font>
+        <font color="blue">else if</font><font color="darkred">(</font>!strcmp<font color="darkred">(</font>argv<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">"-f"</font><font color="darkred">))</font> p = <font color="red">&amp;</font>arg-&gt;rulefn;  <font color="green">/* Rules file. */</font>
+        <font color="blue">else if</font><font color="darkred">(</font>!strcmp<font color="darkred">(</font>argv<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">"-o"</font><font color="darkred">))</font> p = <font color="red">&amp;</font>arg-&gt;outputfn;  <font color="green">/* Output file. */</font>
+        <font color="blue">else break</font>;  <font color="green">/* End of arguments. */</font>
+
+        add_string<font color="darkred">(</font>p, argv<font color="darkred">[</font>++x<font color="darkred">])</font>;
+    <font color="darkred">}</font>
+    
+    <font color="green">/* Make the first non-command-line-argument argument an input file if there
+        are no rules, much like sed. */</font>
+    <font color="blue">if</font><font color="darkred">(</font>x &lt; argc <font color="red">&amp;&amp;</font> !arg-&gt;rulefn.number <font color="red">&amp;&amp;</font> !arg-&gt;ilrule.number<font color="darkred">) {</font>
+        add_string<font color="darkred">(</font><font color="red">&amp;</font>arg-&gt;rulefn, argv<font color="darkred">[</font>x++<font color="darkred">])</font>;
+    <font color="darkred">}</font>
+
+    <font color="green">/* Parse remaining command-line parameters; rules or input files. */</font>
+    <font color="blue">for</font><font color="darkred">(</font> ; x &lt; argc; x ++<font color="darkred">) {</font>
+        add_string<font color="darkred">(</font><font color="red">&amp;</font>arg-&gt;inputfn, argv<font color="darkred">[</font>x<font color="darkred">])</font>;
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Adds a string to a strings_t structure. Calls add_string_len().
+    \param data The structure to add the string \a str to.
+    \param str The string to add to \a data.
+*/</font>
+<font color="blue">void</font> add_string<font color="darkred">(</font><font color="blue">struct</font> strings_t <font color="red">*</font>data, <font color="blue">const char</font> <font color="red">*</font>str<font color="darkred">) {</font>
+    add_string_len<font color="darkred">(</font>data, str, <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Adds a string of specified length to a strings_t structure.
+    \param data The structure to add the string to.
+    \param str The string to add to the structure, \a data. Only \a len
+        characters are copied.
+    \param len Number of characters to copy from the string \a str.
+*/</font>
+<font color="blue">void</font> add_string_len<font color="darkred">(</font><font color="blue">struct</font> strings_t <font color="red">*</font>data, <font color="blue">const char</font> <font color="red">*</font>str, <font color="darkblue">size_t</font> len<font color="darkred">) {</font>
+    <font color="blue">char</font> <font color="red">**</font>p;
+    <font color="darkblue">size_t</font> slen, <font color="red">*</font>tlen;
+
+    slen = <font color="darkred">(</font>len == <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font> ? strlen<font color="darkred">(</font>str<font color="darkred">)</font> : len<font color="darkred">)</font>;
+
+    p = realloc<font color="darkred">(</font>data-&gt;data, <font color="darkred">(</font>data-&gt;number + <font color="blue">1</font><font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">char</font> <font color="red">*</font><font color="darkred">))</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+    data-&gt;data = p;
+    data-&gt;data<font color="darkred">[</font>data-&gt;number<font color="darkred">]</font> = malloc<font color="darkred">(</font>slen + <font color="blue">1</font><font color="darkred">)</font>;
+    <font color="blue">if</font><font color="darkred">(</font>!data-&gt;data<font color="darkred">[</font>data-&gt;number<font color="darkred">])</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>len == <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">) {</font>
+        strcpy<font color="darkred">(</font>data-&gt;data<font color="darkred">[</font>data-&gt;number<font color="darkred">]</font>, str<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+    <font color="blue">else</font> <font color="darkred">{</font>
+        strncpy<font color="darkred">(</font>data-&gt;data<font color="darkred">[</font>data-&gt;number<font color="darkred">]</font>, str, len<font color="darkred">)</font>;
+        data-&gt;data<font color="darkred">[</font>data-&gt;number<font color="darkred">][</font>len<font color="darkred">]</font> = <font color="blue">0</font>;
+    <font color="darkred">}</font>
+
+    tlen = realloc<font color="darkred">(</font>data-&gt;len, <font color="darkred">(</font>data-&gt;number + <font color="blue">1</font><font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">))</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!tlen<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+    data-&gt;len = tlen;
+    data-&gt;len<font color="darkred">[</font>data-&gt;number<font color="darkred">]</font> = slen;
+
+    data-&gt;number ++;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Adds a string to \a data, the equivalent string in \a prev. The string
+    itself isn't copied, the pointer is just set to the same position in
+    (dynamically-allocated) memory.
+    \param data The strings_t structure to add a string to.
+    \param prev The structure to get the pointer to the string from.
+*/</font>
+<font color="blue">void</font> add_string_copy<font color="darkred">(</font><font color="blue">struct</font> strings_t <font color="red">*</font>data, <font color="blue">const struct</font> strings_t <font color="red">*</font>prev<font color="darkred">) {</font>
+    <font color="blue">char</font> <font color="red">**</font>p;
+    <font color="darkblue">size_t</font> <font color="red">*</font>tlen;
+
+    p = realloc<font color="darkred">(</font>data-&gt;data, <font color="darkred">(</font>data-&gt;number + <font color="blue">1</font><font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">char</font> <font color="red">*</font><font color="darkred">))</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+    data-&gt;data = p;
+
+    data-&gt;data<font color="darkred">[</font>data-&gt;number<font color="darkred">]</font> = prev-&gt;data<font color="darkred">[</font>data-&gt;number<font color="darkred">]</font>;
+
+    tlen = realloc<font color="darkred">(</font>data-&gt;len, <font color="darkred">(</font>data-&gt;number + <font color="blue">1</font><font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">))</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!tlen<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+    data-&gt;len = tlen;
+    data-&gt;len<font color="darkred">[</font>data-&gt;number<font color="darkred">]</font> = prev-&gt;len<font color="darkred">[</font>data-&gt;number<font color="darkred">]</font>;
+
+    data-&gt;number ++;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Reallocates the memory for the string \c str to be just enough. Used when
+    some characters have been removed from the string (eg by remove_escapes()).
+    \param str The string to shrink to the right size.
+    \param len The new length of the string.
+*/</font>
+<font color="blue">void</font> shrink_string<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>str, <font color="darkblue">size_t</font> len<font color="darkred">) {</font>
+    <font color="blue">char</font> <font color="red">*</font>p = realloc<font color="darkred">(</font><font color="red">*</font>str, len + <font color="blue">1</font><font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+    <font color="red">*</font>str = p;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Returns true if any of the command-line parameters are usage, help, or
+    version requests. Called before parsing the rest of the arguments.
+    \param argc Number of command-line parameters.
+    \param argv Array of command-line parameters.
+*/</font>
+<font color="blue">int</font> check_usage<font color="darkred">(</font><font color="blue">int</font> argc, <font color="blue">char</font> <font color="red">*</font>argv<font color="darkred">[]) {</font>
+    <font color="blue">int</font> x;
+    
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">1</font>; x &lt; argc; x ++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!strcmp<font color="darkred">(</font>argv<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">"--help"</font><font color="darkred">)</font> || !strcmp<font color="darkred">(</font>argv<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">"-h"</font><font color="darkred">)</font>
+            || !strcmp<font color="darkred">(</font>argv<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">"--usage"</font><font color="darkred">)) {</font>
+
+            print_usage<font color="darkred">(</font>argv<font color="darkred">[</font><font color="blue">0</font><font color="darkred">])</font>;
+            <font color="blue">return 1</font>;
+        <font color="darkred">}</font>
+        <font color="blue">else if</font><font color="darkred">(</font>!strcmp<font color="darkred">(</font>argv<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">"--version"</font><font color="darkred">)</font> || !strcmp<font color="darkred">(</font>argv<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">"-v"</font><font color="darkred">)) {</font>
+            print_version<font color="darkred">()</font>;
+            <font color="blue">return 1</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Prints codeform's usage to the screen.
+    \param progname The executable path of codeform (argv[0] in main()).
+*/</font>
+<font color="blue">void</font> print_usage<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>progname<font color="darkred">) {</font>
+    fprintf<font color="darkred">(</font>stderr, <font color="red">"\n"</font> VERSION
+        <font color="red">"\nExecutable path: %s\n"</font>
+        <font color="red">"\nusage: codeform [-f rule-file] [-e inline-rule] [-o output]"</font>
+        <font color="red">"\n                [--help] [-h] [--usage] [--version] [-v]"</font>
+        <font color="red">"\n                [--] [rule-file-if-no-other-rules] [files...]\n"</font>
+        <font color="red">"\nThe arguments are very similar to sed's (and -o is from GCC).\n"</font>
+        <font color="red">"\nOutput can go to multiple files -- just specify more than one -o"</font>
+        <font color="red">" argument. With\nno -o arguments (or if none of the output files"</font>
+        <font color="red">" could be opened), stdout is\nused instead.\n"</font>, progname<font color="darkred">)</font>;
+    fprintf<font color="darkred">(</font>stderr,  <font color="green">/* Two fprintf()s to avoid strings over 509 chars long. */</font>
+        <font color="red">"\nIf no rules are specified, the first argument that isn't preceded"</font>
+        <font color="red">" by an option\nis taken as a rules file instead of an input file."</font>
+        <font color="red">" With no input files, stdin\nis used.\n"</font>
+        <font color="red">"\nA simple usage of codeform might look like the following:"</font>
+        <font color="red">"\n    $ ./codeform -o codeform.htm rules/c_1_html codeform.c"</font>
+        <font color="red">"\nThis formats codeform.c according to the rules in rules/c_1_html,"</font>
+        <font color="red">" storing the\noutput in codeform.htm.\n"</font><font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Prints the version of codeform, including time and date of compilation
+    (__TIME__ and __DATE__).
+*/</font>
+<font color="blue">void</font> print_version<font color="darkred">(</font><font color="blue">void</font><font color="darkred">) {</font>
+    fprintf<font color="darkred">(</font>stderr, <font color="red">"\n"</font> VERSION <font color="red">" ("</font> __TIME__ <font color="red">" "</font> __DATE__ <font color="red">")"</font>
+        <font color="red">"\nCopyright (C) 2007 DWK\n"</font>
+        <font color="red">"\nThis is free software; see the source for copying conditions. "</font>
+            <font color="red">" There is NO"</font>
+        <font color="red">"\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR"</font>
+            <font color="red">" PURPOSE,"</font>
+        <font color="red">"\nto the extent permitted by law.\n"</font>
+        <font color="red">"\nSee the file history that comes with the distribution for a"</font>
+        <font color="red">" complete history\nlist of versions of codeform.\n"</font><font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Prints an error and exits due to an out-of-memory condition.
+    \param file The file in which the condition occured (__FILE__).
+    \param line The line at which the condition occured (__LINE__).
+*/</font>
+<font color="blue">void</font> out_of_memory<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>file, <font color="blue">int</font> line<font color="darkred">) {</font>
+    fprintf<font color="darkred">(</font>stderr, <font color="red">"codeform: (%s:%i): Out of memory\n"</font>, file, line<font color="darkred">)</font>;
+    exit<font color="darkred">(</font><font color="blue">1</font><font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Frees the memory allocated in a ruledata_t structure. Frees data only once,
+    even if two rules reference the same memory.
+    \param ruledata The ruledata_t structure to free the contents of.
+*/</font>
+<font color="blue">void</font> free_ruledata<font color="darkred">(</font><font color="blue">const struct</font> ruledata_t <font color="red">*</font>ruledata<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; ruledata-&gt;number; x ++<font color="darkred">) {</font>
+        free_onerule<font color="darkred">(</font>ruledata, x<font color="darkred">)</font>;
+
+        free<font color="darkred">(</font>ruledata-&gt;data<font color="darkred">[</font>x<font color="darkred">])</font>;
+    <font color="darkred">}</font>
+
+    free<font color="darkred">(</font>ruledata-&gt;data<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Frees the memory allocated for the cdat[] array of rules in \a rules.
+    \param rules The structure containing the array of rules to free.
+*/</font>
+<font color="blue">void</font> free_rulecdat<font color="darkred">(</font><font color="blue">const struct</font> rules_t <font color="red">*</font>rules<font color="darkred">) {</font>
+    <font color="blue">enum</font> type_t x;
+    <font color="darkblue">size_t</font> y;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; TYPES; x ++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>rules-&gt;cdat<font color="darkred">[</font>x<font color="darkred">]) {</font>
+            <font color="blue">for</font><font color="darkred">(</font>y = <font color="blue">0</font>; y &lt; rules-&gt;cdat<font color="darkred">[</font>x<font color="darkred">]</font>-&gt;data.number; y ++<font color="darkred">) {</font>
+                free<font color="darkred">(</font>rules-&gt;cdat<font color="darkred">[</font>x<font color="darkred">]</font>-&gt;data.data<font color="darkred">[</font>y<font color="darkred">])</font>;
+            <font color="darkred">}</font>
+
+            free<font color="darkred">(</font>rules-&gt;cdat<font color="darkred">[</font>x<font color="darkred">]</font>-&gt;data.data<font color="darkred">)</font>;
+            free<font color="darkred">(</font>rules-&gt;cdat<font color="darkred">[</font>x<font color="darkred">]</font>-&gt;data.len<font color="darkred">)</font>;
+            free<font color="darkred">(</font>rules-&gt;cdat<font color="darkred">[</font>x<font color="darkred">])</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Frees the allocated memory for a strings_t structure contained in a
+    one_rule structure. Sets any pointers in \a ruledata to the same memory to
+    NULL.
+    \param ruledata The structure containing structures with allocated memory.
+    \param which The strings_t structure to free the contents of.
+*/</font>
+<font color="blue">void</font> free_onerule<font color="darkred">(</font><font color="blue">const struct</font> ruledata_t <font color="red">*</font>ruledata, <font color="darkblue">size_t</font> which<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x, y;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; ruledata-&gt;data<font color="darkred">[</font>which<font color="darkred">]</font>-&gt;data.number; x ++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>ruledata-&gt;data<font color="darkred">[</font>which<font color="darkred">]</font>-&gt;data.data<font color="darkred">[</font>x<font color="darkred">]) {</font>
+            <font color="blue">for</font><font color="darkred">(</font>y = which + <font color="blue">1</font>; y &lt; ruledata-&gt;number; y ++<font color="darkred">) {</font>
+                <font color="blue">if</font><font color="darkred">(</font>y != which <font color="red">&amp;&amp;</font> x &lt; ruledata-&gt;data<font color="darkred">[</font>y<font color="darkred">]</font>-&gt;data.number  <font color="green">/* !!!?*/</font>
+                    <font color="red">&amp;&amp;</font> ruledata-&gt;data<font color="darkred">[</font>which<font color="darkred">]</font>-&gt;data.data<font color="darkred">[</font>x<font color="darkred">]</font>
+                    == ruledata-&gt;data<font color="darkred">[</font>y<font color="darkred">]</font>-&gt;data.data<font color="darkred">[</font>x<font color="darkred">]) {</font>
+
+                    ruledata-&gt;data<font color="darkred">[</font>y<font color="darkred">]</font>-&gt;data.data<font color="darkred">[</font>x<font color="darkred">]</font> = <font color="blue">0</font>;
+                <font color="darkred">}</font>
+            <font color="darkred">}</font>
+
+            free<font color="darkred">(</font>ruledata-&gt;data<font color="darkred">[</font>which<font color="darkred">]</font>-&gt;data.data<font color="darkred">[</font>x<font color="darkred">])</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    free<font color="darkred">(</font>ruledata-&gt;data<font color="darkred">[</font>which<font color="darkred">]</font>-&gt;data.data<font color="darkred">)</font>;
+    free<font color="darkred">(</font>ruledata-&gt;data<font color="darkred">[</font>which<font color="darkred">]</font>-&gt;data.len<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Frees the memory allocated for a strings_t structure. All members are freed
+    except for the structure itself and non-pointer members.
+    \param strings The strings_t structure to free allocated memory from.
+*/</font>
+<font color="blue">void</font> free_strings<font color="darkred">(</font><font color="blue">const struct</font> strings_t <font color="red">*</font>strings<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; strings-&gt;number; x ++<font color="darkred">) {</font>
+        free<font color="darkred">(</font>strings-&gt;data<font color="darkred">[</font>x<font color="darkred">])</font>;
+    <font color="darkred">}</font>
+
+    free<font color="darkred">(</font>strings-&gt;data<font color="darkred">)</font>;
+    free<font color="darkred">(</font>strings-&gt;len<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Frees the rule \a rule and its parts that are not present in \a prev.
+    \param rule The structure to free, including all non-duplicate parts.
+    \param prev The structure containing parts that could possibly be
+        duplicates of \a rule's parts.
+*/</font>
+<font color="blue">void</font> free_dup_onerule<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">const struct</font> onerule_t <font color="red">*</font>prev<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; rule-&gt;data.number; x ++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!prev || x &gt;= prev-&gt;data.number
+            || rule-&gt;data.data<font color="darkred">[</font>x<font color="darkred">]</font> != prev-&gt;data.data<font color="darkred">[</font>x<font color="darkred">]) {</font>
+
+            free<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font>x<font color="darkred">])</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    free<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">)</font>;
+    free<font color="darkred">(</font>rule-&gt;data.len<font color="darkred">)</font>;
+    free<font color="darkred">(</font>rule<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Frees the memory allocated in a rulevars_t structure.
+    \param rulevars The rulevars_t structure to free the contents of.
+*/</font>
+<font color="blue">void</font> free_rulevars<font color="darkred">(</font><font color="blue">const struct</font> rulevars_t <font color="red">*</font>rulevars<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; rulevars-&gt;number; x ++<font color="darkred">) {</font>
+        free_onevar<font color="darkred">(</font>rulevars-&gt;data<font color="darkred">[</font>x<font color="darkred">])</font>;
+
+        free<font color="darkred">(</font>rulevars-&gt;data<font color="darkred">[</font>x<font color="darkred">])</font>;
+    <font color="darkred">}</font>
+
+    free<font color="darkred">(</font>rulevars-&gt;data<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Frees the memory allocated for a onevar_t structure.
+    \param var The structure to free the contents of.
+*/</font>
+<font color="blue">void</font> free_onevar<font color="darkred">(</font><font color="blue">const struct</font> onevar_t <font color="red">*</font>var<font color="darkred">) {</font>
+    free<font color="darkred">(</font>var-&gt;from<font color="darkred">)</font>;
+    free<font color="darkred">(</font>var-&gt;to<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Frees the memory allocated while parsing command-line arguments:
+    the input, output, and rules file names and any inline rules.
+    \param argument The structure containing the comment-line data to free.
+*/</font>
+<font color="blue">void</font> free_argument<font color="darkred">(</font><font color="blue">const struct</font> argument_t <font color="red">*</font>argument<font color="darkred">) {</font>
+    free_strings<font color="darkred">(</font><font color="red">&amp;</font>argument-&gt;inputfn<font color="darkred">)</font>;
+    free_strings<font color="darkred">(</font><font color="red">&amp;</font>argument-&gt;outputfn<font color="darkred">)</font>;
+    free_strings<font color="darkred">(</font><font color="red">&amp;</font>argument-&gt;rulefn<font color="darkred">)</font>;
+    free_strings<font color="darkred">(</font><font color="red">&amp;</font>argument-&gt;ilrule<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Frees the rule pointed to in the \c prevrule_t structure by the member
+    \c prev if it is the only pointer to the allocated memory.
+    \param pr The \c prevrule_t structure containing a pointer to the previous
+        rule parsed.
+*/</font>
+<font color="blue">void</font> free_prevrule<font color="darkred">(</font><font color="blue">struct</font> prevrule_t <font color="red">*</font>pr<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>pr-&gt;freep<font color="darkred">) {</font>
+        free_dup_onerule<font color="darkred">(</font>pr-&gt;prev, pr-&gt;one<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Opens the file \a fn in mode \a mode, returning the file pointer on success
+    or NULL on error. Prints an error message on error before returning.
+    \param fn The name of the file to open.
+    \param mode The mode to open the file in.
+    \return The newly opened file, or NULL on error.
+*/</font>
+<font color="darkblue">FILE</font> <font color="red">*</font>open_file<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>fn, <font color="blue">const char</font> <font color="red">*</font>mode<font color="darkred">) {</font>
+    <font color="darkblue">FILE</font> <font color="red">*</font>fp;
+
+    <font color="blue">if</font><font color="darkred">(</font>!strcmp<font color="darkred">(</font>fn, <font color="red">"-"</font><font color="darkred">)) {</font>
+        <font color="blue">return</font> strchr<font color="darkred">(</font>mode, <font color="red">'r'</font><font color="darkred">)</font> ? stdin : stdout;
+    <font color="darkred">}</font>
+
+    <font color="blue">if</font><font color="darkred">(</font>!<font color="darkred">(</font>fp = fopen<font color="darkred">(</font>fn, mode<font color="darkred">))) {</font>
+        fprintf<font color="darkred">(</font>stderr, <font color="red">"codeform: Can't open file \"%s\" for mode \"%s\"\n"</font>,
+            fn, mode<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return</font> fp;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! A dynamic-memory allocating clone of fgets(). Reads characters from fp,
+    storing them in \a line starting with (*line)[len].
+    \param line The resizeable string to store characters in.
+    \param len The position in \a line to start storing characters at.
+    \param alen The amount of memory currently allocated (multiple of BUFSIZ).
+    \param fp The file to read the characters from.
+    \return The new length of the string (\a len modified). It will be the same
+    as \a len if no characters were read before EOF was encountered.
+*/</font>
+<font color="darkblue">size_t</font> get_string<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>line, <font color="darkblue">size_t</font> len, <font color="darkblue">size_t</font> <font color="red">*</font>alen, <font color="darkblue">FILE</font> <font color="red">*</font>fp<font color="darkred">) {</font>
+    <font color="blue">char</font> <font color="red">*</font>p;
+    <font color="blue">int</font> c = <font color="blue">0</font>;
+
+    <font color="blue">do</font> <font color="darkred">{</font>
+        <font color="blue">if</font><font color="darkred">(</font>c == <font color="red">'\n'</font><font color="darkred">)</font> c = <font color="blue">0</font>;
+        <font color="blue">else</font> c = getc<font color="darkred">(</font>fp<font color="darkred">)</font>;
+
+        <font color="blue">if</font><font color="darkred">(</font>c == EOF<font color="darkred">) {</font>
+            c = <font color="blue">0</font>;
+        <font color="darkred">}</font>
+
+        <font color="blue">if</font><font color="darkred">(</font>len &gt;= <font color="red">*</font>alen<font color="darkred">) {</font>
+            <font color="blue">if</font><font color="darkred">(</font><font color="red">*</font>alen<font color="darkred">)</font> <font color="red">*</font>alen <font color="red">*</font>= <font color="blue">2</font>;
+            <font color="blue">else</font> <font color="red">*</font>alen = BUFSIZ;
+
+            p = realloc<font color="darkred">(</font><font color="red">*</font>line, <font color="red">*</font>alen<font color="darkred">)</font>;
+
+            <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+            <font color="red">*</font>line = p;
+        <font color="darkred">}</font>
+
+        <font color="darkred">(</font><font color="red">*</font>line<font color="darkred">)[</font>len++<font color="darkred">]</font> = c;
+    <font color="darkred">}</font> <font color="blue">while</font><font color="darkred">(</font>c<font color="darkred">)</font>;
+
+    <font color="blue">return</font> len - <font color="blue">1</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Loads all the rules files in \a rulefn by calling add_rules_file() for each
+    one. Stores the rules read into \a rules.
+    \param rules The structure to store all the rules read in into.
+    \param rulefn The names of rules files to parse.
+*/</font>
+<font color="blue">void</font> load_rules<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const struct</font> strings_t <font color="red">*</font>rulefn<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; rulefn-&gt;number; x ++<font color="darkred">) {</font>
+        add_rules_file<font color="darkred">(</font>rules, rulefn-&gt;data<font color="darkred">[</font>x<font color="darkred">])</font>;
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Adds the inline rules in \c ilrule to \c rules by calling add_rule_var()
+    for each rule.
+    \param rules The structure to add the rules to.
+    \param ilrule The inline rules to add.
+*/</font>
+<font color="blue">void</font> add_ilrules<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const struct</font> strings_t <font color="red">*</font>ilrule<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; ilrule-&gt;number; x ++<font color="darkred">) {</font>
+        add_rule_var<font color="darkred">(</font>rules, ilrule-&gt;data<font color="darkred">[</font>x<font color="darkred">]</font>, NULL, x + <font color="blue">1</font><font color="darkred">)</font>;
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Sources a rules file, prepending the location of the containing rules file
+    if it does not start with "./" or ".\\".
+    \param rules The rules read from rules files so far.
+    \param fn The name of the rules file to read.
+    \param dir The name of the containing rules file to extract the path from.
+*/</font>
+<font color="blue">void</font> add_rules_file_dir<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>fn,
+    <font color="blue">const char</font> <font color="red">*</font>dir<font color="darkred">) {</font>
+
+    <font color="blue">char</font> <font color="red">*</font>last = strrchr<font color="darkred">(</font>dir, <font color="red">'/'</font><font color="darkred">)</font>, <font color="red">*</font>p = strrchr<font color="darkred">(</font>dir, <font color="red">'\\'</font><font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>p &gt; last<font color="darkred">)</font> last = p;
+
+    <font color="blue">if</font><font color="darkred">(</font>fn <font color="red">&amp;&amp;</font> !is_current_dir<font color="darkred">(</font>fn<font color="darkred">)</font> <font color="red">&amp;&amp;</font> last ++<font color="darkred">) {</font>
+        p = malloc<font color="darkred">(</font>strlen<font color="darkred">(</font>fn<font color="darkred">)</font> + last - dir + <font color="blue">1</font><font color="darkred">)</font>;
+        <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+        strncpy<font color="darkred">(</font>p, dir, last - dir<font color="darkred">)</font>;
+        strcpy<font color="darkred">(</font>p + <font color="darkred">(</font>last - dir<font color="darkred">)</font>, fn<font color="darkred">)</font>;
+
+        add_rules_file<font color="darkred">(</font>rules, p<font color="darkred">)</font>;
+
+        free<font color="darkred">(</font>p<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+    <font color="blue">else</font> add_rules_file<font color="darkred">(</font>rules, fn<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Reads the file \a fn, passing each rule to add_rule_var() for parsing.
+    \param rules The rules that have already been parsed, to add new rules to.
+    \param fn The name of the file containing the new rules.
+*/</font>
+<font color="blue">void</font> add_rules_file<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>fn<font color="darkred">) {</font>
+    <font color="darkblue">FILE</font> <font color="red">*</font>fp = open_file<font color="darkred">(</font>fn, <font color="red">"r"</font><font color="darkred">)</font>;
+    <font color="blue">char</font> <font color="red">*</font>str = <font color="blue">0</font>;
+    <font color="blue">int</font> line = <font color="blue">0</font>, isb;
+    <font color="darkblue">size_t</font> tlen, len, flen = <font color="blue">0</font>, alen = <font color="blue">0</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!fp<font color="darkred">)</font> <font color="blue">return</font>;
+
+    <font color="blue">do</font> <font color="darkred">{</font>
+        len = <font color="blue">0</font>;
+
+        isb = <font color="blue">1</font>;
+        <font color="blue">while</font><font color="darkred">(</font>isb <font color="red">&amp;&amp;</font> <font color="darkred">(</font>tlen = get_string<font color="darkred">(</font><font color="red">&amp;</font>str, len, <font color="red">&amp;</font>alen, fp<font color="darkred">))</font> != len<font color="darkred">) {</font>
+            flen = tlen;
+
+            chomp_newline<font color="darkred">(</font>str, <font color="red">&amp;</font>flen<font color="darkred">)</font>;
+
+            isb = is_backslashed<font color="darkred">(</font>str+len, str+flen<font color="darkred">)</font>;
+
+            len = flen;
+            line ++;
+
+            <font color="blue">if</font><font color="darkred">(</font>len <font color="red">&amp;&amp;</font> str<font color="darkred">[</font>len-<font color="blue">1</font><font color="darkred">]</font> == <font color="red">'\\'</font><font color="darkred">)</font> str<font color="darkred">[</font>--len<font color="darkred">]</font> = <font color="blue">0</font>;
+        <font color="darkred">}</font>
+
+        add_rule_var<font color="darkred">(</font>rules, str, fn, line<font color="darkred">)</font>;
+    <font color="darkred">}</font> <font color="blue">while</font><font color="darkred">(</font>tlen != len<font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>fp != stdin<font color="darkred">)</font> fclose<font color="darkred">(</font>fp<font color="darkred">)</font>;
+
+    free<font color="darkred">(</font>str<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Adds a rule/variable specified by \c str into \c rules.
+    \param rules The structure to add the variable/rule to.
+    \param str The string representing the rule/variable.
+    \param file The file that the string \c str came from.
+    \param line The line of the file \c file from which \c str came.
+*/</font>
+<font color="blue">void</font> add_rule_var<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">char</font> <font color="red">*</font>str, <font color="blue">const char</font> <font color="red">*</font>file,
+    <font color="blue">int</font> line<font color="darkred">) {</font>
+
+    <font color="blue">char</font> <font color="red">*</font>p;
+
+    remove_comments<font color="darkred">(</font>str<font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font><font color="red">*</font>str == <font color="red">'.'</font><font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>file <font color="red">&amp;&amp;</font> !strcmp<font color="darkred">(</font>file, str+<font color="blue">1</font><font color="darkred">)) {</font>
+            fprintf<font color="darkred">(</font>stderr, <font color="red">"codeform: Error in rule (%s:%i):"</font>
+                <font color="red">" Recursive sourcing: \"%s\"\n"</font>,
+                file ? file : <font color="red">"-e"</font>, line, str<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+        <font color="blue">else</font> <font color="darkred">{</font>
+            <font color="blue">if</font><font color="darkred">(</font>file <font color="red">&amp;&amp;</font> !strchr<font color="darkred">(</font>str+<font color="blue">1</font>, <font color="red">'/'</font><font color="darkred">)</font> <font color="red">&amp;&amp;</font> !strchr<font color="darkred">(</font>str+<font color="blue">1</font>, <font color="red">'\\'</font><font color="darkred">)) {</font>
+                add_rules_file_dir<font color="darkred">(</font>rules, str+<font color="blue">1</font>, file<font color="darkred">)</font>;
+            <font color="darkred">}</font>
+            <font color="blue">else</font> add_rules_file<font color="darkred">(</font>rules, str+<font color="blue">1</font><font color="darkred">)</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+    <font color="blue">else if</font><font color="darkred">((</font>p = is_var<font color="darkred">(</font>str<font color="darkred">)))</font> add_var<font color="darkred">(</font><font color="red">&amp;</font>rules-&gt;vars, str, p<font color="darkred">)</font>;
+    <font color="blue">else if</font><font color="darkred">(</font><font color="red">*</font>str<font color="darkred">)</font> add_rule<font color="darkred">(</font>rules, str, file, line<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Adds a variable to the list of variables. The variable starts with \a str,
+    and the position of the '=' is at \a eq.
+    \param vars The structure of variables to store the new variable in.
+    \param str The string representing the variable.
+    \param eq The position in string of the '=' sign separating the name of the
+        variable from the variable's value.
+*/</font>
+<font color="blue">void</font> add_var<font color="darkred">(</font><font color="blue">struct</font> rulevars_t <font color="red">*</font>vars, <font color="blue">char</font> <font color="red">*</font>str, <font color="blue">char</font> <font color="red">*</font>eq<font color="darkred">) {</font>
+    <font color="blue">struct</font> onevar_t <font color="red">**</font>p;
+    <font color="darkblue">size_t</font> eqlen = strlen<font color="darkred">(</font>eq<font color="darkred">)</font>, pos;
+
+    <font color="red">*</font>eq = <font color="blue">0</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>find_var_pos<font color="darkred">(</font>vars, str, <font color="red">&amp;</font>pos<font color="darkred">))</font> <font color="blue">return</font>;
+    <font color="blue">if</font><font color="darkred">(</font>pos == <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">)</font> pos = <font color="blue">0</font>;
+
+    p = realloc<font color="darkred">(</font>vars-&gt;data, <font color="darkred">(</font>vars-&gt;number + <font color="blue">1</font><font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">struct</font> onevar_t <font color="red">*</font><font color="darkred">))</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+    vars-&gt;data = p;
+
+    memmove<font color="darkred">(</font>vars-&gt;data + pos + <font color="blue">1</font>, vars-&gt;data + pos,
+        <font color="darkred">(</font>vars-&gt;number - pos<font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">struct</font> onevar_t <font color="red">*</font><font color="darkred">))</font>;
+
+    vars-&gt;data<font color="darkred">[</font>pos<font color="darkred">]</font> = malloc<font color="darkred">(</font><font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">struct</font> onevar_t<font color="darkred">))</font>;
+    <font color="blue">if</font><font color="darkred">(</font>!vars-&gt;data<font color="darkred">[</font>pos<font color="darkred">])</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+    vars-&gt;data<font color="darkred">[</font>pos<font color="darkred">]</font>-&gt;from = malloc<font color="darkred">(</font>eq - str + <font color="blue">1</font><font color="darkred">)</font>;
+    <font color="blue">if</font><font color="darkred">(</font>!vars-&gt;data<font color="darkred">[</font>pos<font color="darkred">]</font>-&gt;from<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+    <font color="green">/*strncpy(vars-&gt;data[pos]-&gt;from, str, eq - str);*/</font>
+    strcpy<font color="darkred">(</font>vars-&gt;data<font color="darkred">[</font>pos<font color="darkred">]</font>-&gt;from, str<font color="darkred">)</font>;  <font color="green">/* will not overflow */</font>
+    <font color="green">/*vars-&gt;data[pos]-&gt;from[eq - str] = 0;*/</font>
+    vars-&gt;data<font color="darkred">[</font>pos<font color="darkred">]</font>-&gt;flen = eq - str;
+
+    vars-&gt;data<font color="darkred">[</font>pos<font color="darkred">]</font>-&gt;to = malloc<font color="darkred">(</font>eqlen<font color="darkred">)</font>;
+    <font color="blue">if</font><font color="darkred">(</font>!vars-&gt;data<font color="darkred">[</font>pos<font color="darkred">]</font>-&gt;to<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+    strcpy<font color="darkred">(</font>vars-&gt;data<font color="darkred">[</font>pos<font color="darkred">]</font>-&gt;to, eq+<font color="blue">1</font><font color="darkred">)</font>;
+    vars-&gt;data<font color="darkred">[</font>pos<font color="darkred">]</font>-&gt;tlen = eqlen - <font color="blue">1</font>;
+
+    vars-&gt;number ++;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Binary searches through the existing variables in \a rt for the position
+    that the variable \a p should be in, putting the result in \a pos.
+    \param vars The existing variables to search through.
+    \param p The text representing the new variable to search for.
+    \param pos The variable to store the position found in. Set to (size_t)-1
+        if no match was found.
+    \return 1 if an exact match (to the shortest length) was found, 0
+        otherwise.
+*/</font>
+<font color="blue">int</font> find_var_pos<font color="darkred">(</font><font color="blue">struct</font> rulevars_t <font color="red">*</font>vars, <font color="blue">const char</font> <font color="red">*</font>p, <font color="darkblue">size_t</font> <font color="red">*</font>pos<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> mid = <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>, first = <font color="blue">0</font>, last = vars-&gt;number-<font color="blue">1</font>;
+    <font color="blue">int</font> v = <font color="blue">0</font>;
+
+    <font color="red">*</font>pos = <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!vars-&gt;number<font color="darkred">)</font> <font color="blue">return 0</font>;
+
+    <font color="blue">while</font><font color="darkred">(</font>first &lt;= last <font color="red">&amp;&amp;</font> last != <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">) {</font>
+        mid = <font color="darkred">(</font>first + last<font color="darkred">)</font> / <font color="blue">2</font>;
+
+        v = strcmp<font color="darkred">(</font>p, vars-&gt;data<font color="darkred">[</font>mid<font color="darkred">]</font>-&gt;from<font color="darkred">)</font>;
+
+        <font color="blue">if</font><font color="darkred">(</font>first == last <font color="red">&amp;&amp;</font> v<font color="darkred">)</font> <font color="blue">break</font>;
+
+        <font color="blue">if</font><font color="darkred">(</font>v &lt; <font color="blue">0</font><font color="darkred">)</font> last = mid-<font color="blue">1</font>;
+        <font color="blue">else if</font><font color="darkred">(</font>v &gt; <font color="blue">0</font><font color="darkred">)</font> first = mid+<font color="blue">1</font>;
+        <font color="blue">else</font> <font color="darkred">{</font>
+            <font color="red">*</font>pos = mid;
+            first = mid+<font color="blue">1</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    <font color="blue">if</font><font color="darkred">(</font><font color="red">*</font>pos != <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">)</font> <font color="blue">return 1</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>v &lt; <font color="blue">0</font><font color="darkred">)</font> <font color="red">*</font>pos = mid;
+    <font color="blue">else</font> <font color="red">*</font>pos = mid+<font color="blue">1</font>;
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Called by add_rule() to determine the type of the rule \a str.
+    \param rules The array of rules that have been parsed so far.
+    \param t The pointer to store the type of the current rule.
+    \param str The rule itself.
+    \param file The file which the rule \a str came from.
+    \param line The line of the file from which the rule came.
+    \return 0 if no errors occured and str is an ordinary rule; nonzero if the
+        rule is a header, an invalid header, or not under a header. If \a str
+        is an inline header, positions \a str past the header and returns 0 so
+        that \a str may be treated as an ordinary rule.
+*/</font>
+<font color="blue">int</font> add_rule_type<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">enum</font> type_t <font color="red">*</font>t, <font color="blue">char</font> <font color="red">**</font>str,
+    <font color="blue">const char</font> <font color="red">*</font>file, <font color="blue">int</font> line<font color="darkred">) {</font>
+
+    <font color="darkblue">size_t</font> v = get_type<font color="darkred">(</font>rules, <font color="red">*</font>str, t<font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!v<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>rules-&gt;pr.type == TYPE_ERROR<font color="darkred">) {</font>
+            fprintf<font color="darkred">(</font>stderr, <font color="red">"codeform: Error in rule (%s:%i):"</font>
+                <font color="red">" Rule not under a header: \"%s\"\n"</font>,
+                file ? file : <font color="red">"-e"</font>, line, <font color="red">*</font>str<font color="darkred">)</font>;
+            <font color="blue">return 1</font>;
+        <font color="darkred">}</font>
+        <font color="blue">else</font> <font color="darkred">{</font>
+            <font color="red">*</font>t = rules-&gt;pr.type;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+    <font color="blue">else if</font><font color="darkred">(</font>v == <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">) {</font>
+        rules-&gt;pr.type = TYPE_ERROR;
+        fprintf<font color="darkred">(</font>stderr, <font color="red">"codeform: Error in rule (%s:%i):"</font>
+            <font color="red">" Invalid header: \"%s\"\n"</font>,
+            file ? file : <font color="red">"-e"</font>, line, <font color="red">*</font>str<font color="darkred">)</font>;
+        <font color="blue">return 1</font>;
+    <font color="darkred">}</font>
+    <font color="blue">else</font> <font color="darkred">{</font>
+        rules-&gt;pr.type = <font color="red">*</font>t;
+
+        <font color="blue">if</font><font color="darkred">(</font>v != <font color="blue">1</font><font color="darkred">) {</font>
+            <font color="red">*</font>str += v;
+        <font color="darkred">}</font>
+        <font color="blue">else return 1</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Adds the rule \a one to the correct place, keeping the list of rules
+    sorted.
+    \param rules The array of rules collected so far.
+    \param rsort The index to sort this rule by.
+    \param one The rule to add to \a rd.
+    \return Same as find_rule_new(): 1 if an exact match was found, 0
+        otherwise. 2 if \a one is already an existing rule.
+*/</font>
+<font color="blue">int</font> add_rule_pos<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="darkblue">size_t</font> rsort, <font color="blue">struct</font> onerule_t <font color="red">*</font>one<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> sort;
+    <font color="blue">int</font> r;
+
+    r = find_rule_new<font color="darkred">(</font>rules, one-&gt;data.data<font color="darkred">[</font>rsort<font color="darkred">]</font>, <font color="red">&amp;</font>sort<font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>r == <font color="blue">2</font><font color="darkred">)</font> <font color="blue">return 2</font>;  <font color="green">/* \a one is already an existing rule. */</font>
+
+    add_rule_new<font color="darkred">(</font><font color="red">&amp;</font>rules-&gt;data<font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>r<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>sort+<font color="blue">1</font> == rules-&gt;data.number<font color="darkred">) {</font>
+            rules-&gt;data.data<font color="darkred">[</font>rules-&gt;data.number<font color="darkred">]</font> = one;
+        <font color="darkred">}</font>
+        <font color="blue">else</font> <font color="darkred">{</font>
+            memmove<font color="darkred">(</font>rules-&gt;data.data+sort+<font color="blue">2</font>, rules-&gt;data.data+sort+<font color="blue">1</font>,
+                <font color="darkred">(</font>rules-&gt;data.number - sort - <font color="blue">1</font><font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font><font color="darkred">))</font>;
+            rules-&gt;data.data<font color="darkred">[</font>sort+<font color="blue">1</font><font color="darkred">]</font> = one;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+    <font color="blue">else</font> <font color="darkred">{</font>
+        <font color="blue">if</font><font color="darkred">(</font>sort == <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">) {</font>
+            rules-&gt;data.data<font color="darkred">[</font>rules-&gt;data.number<font color="darkred">]</font> = one;
+        <font color="darkred">}</font>
+        <font color="blue">else</font> <font color="darkred">{</font>
+            memmove<font color="darkred">(</font>rules-&gt;data.data+sort+<font color="blue">1</font>, rules-&gt;data.data+sort,
+                <font color="darkred">(</font>rules-&gt;data.number - sort<font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font><font color="darkred">))</font>;
+            rules-&gt;data.data<font color="darkred">[</font>sort<font color="darkred">]</font> = one;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    <font color="blue">return</font> r;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Allocates a new rule and sets all of its fields to an appropriate value.
+    \return The newly allocated and initialized rule.
+*/</font>
+<font color="blue">struct</font> onerule_t <font color="red">*</font>rule_new<font color="darkred">(</font><font color="blue">void</font><font color="darkred">) {</font>
+    <font color="blue">struct</font> onerule_t <font color="red">*</font>one = malloc<font color="darkred">(</font><font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">struct</font> onerule_t<font color="darkred">))</font>;
+    <font color="blue">if</font><font color="darkred">(</font>!one<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+    one-&gt;prev = <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>;
+    one-&gt;data.data = <font color="blue">0</font>;
+    one-&gt;data.len = <font color="blue">0</font>;
+    one-&gt;data.number = <font color="blue">0</font>;
+
+    <font color="blue">return</font> one;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Increments the size of the array of structures in \a rd to accommodate a
+    new rule.
+    \param rd The current array of rules.
+    \return The newly allocated rule.
+*/</font>
+<font color="blue">void</font> add_rule_new<font color="darkred">(</font><font color="blue">struct</font> ruledata_t <font color="red">*</font>rd<font color="darkred">) {</font>
+    <font color="blue">struct</font> onerule_t <font color="red">**</font>p;
+
+    p = realloc<font color="darkred">(</font>rd-&gt;data, <font color="darkred">(</font>rd-&gt;number + <font color="blue">1</font><font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font><font color="darkred">))</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+
+    rd-&gt;data = p;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Adds the rule \a str to the structure \a rules containing the array of
+    rules. In doing so, it separates the parts of the rule, extracts variables
+    and processes escapes; and does a search on the existing rules to find the
+    position of the current one. If the rule is a header it is handled, too.
+    \param rules The structure containing the rules parsed so far, to add the
+        latest rule \a str to.
+    \param str The string representing the rule to add to \a rules.
+    \param file The file that the rule \a str came from.
+    \param line The line of the file that the rule \a str came from.
+*/</font>
+<font color="blue">void</font> add_rule<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">char</font> <font color="red">*</font>str, <font color="blue">const char</font> <font color="red">*</font>file, <font color="blue">int</font> line<font color="darkred">) {</font>
+    <font color="blue">enum</font> type_t t;
+    <font color="blue">int</font> r;
+
+    <font color="blue">if</font><font color="darkred">(</font>add_rule_type<font color="darkred">(</font>rules, <font color="red">&amp;</font>t, <font color="red">&amp;</font>str, file, line<font color="darkred">))</font> <font color="blue">return</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!check_parts<font color="darkred">(</font>rules-&gt;type<font color="darkred">[</font>t<font color="darkred">]</font>.parts, rules-&gt;type<font color="darkred">[</font>t<font color="darkred">]</font>.xparts, str<font color="darkred">)) {</font>
+        fprintf<font color="darkred">(</font>stderr, <font color="red">"codeform: Error in rule (%s:%i):"</font>
+            <font color="red">" Incorrect number of parts (must be %i-%i): \"%s\"\n"</font>,
+            file ? file : <font color="red">"-e"</font>, line, rules-&gt;type<font color="darkred">[</font>t<font color="darkred">]</font>.parts,
+            rules-&gt;type<font color="darkred">[</font>t<font color="darkred">]</font>.parts + rules-&gt;type<font color="darkred">[</font>t<font color="darkred">]</font>.xparts, str<font color="darkred">)</font>;
+        <font color="blue">return</font>;
+    <font color="darkred">}</font>
+
+    rules-&gt;pr.one = rule_new<font color="darkred">()</font>;
+
+    rules-&gt;pr.one-&gt;type = t;
+
+    add_parts<font color="darkred">(</font><font color="red">&amp;</font>rules-&gt;pr.one-&gt;data,
+        rules-&gt;data.number ? <font color="red">&amp;</font>rules-&gt;pr.prev-&gt;data : <font color="blue">0</font>, str<font color="darkred">)</font>;
+    process_vars<font color="darkred">(</font><font color="red">&amp;</font>rules-&gt;vars, <font color="red">&amp;</font>rules-&gt;pr.one-&gt;data<font color="darkred">)</font>;
+    process_escapes<font color="darkred">(</font><font color="red">&amp;</font>rules-&gt;pr.one-&gt;data<font color="darkred">)</font>;
+
+    rules-&gt;pr.type = t;
+
+    r = add_allocated_rule<font color="darkred">(</font>rules, <font color="red">&amp;</font>rules-&gt;cdat<font color="darkred">[</font>t<font color="darkred">]</font>, rules-&gt;type<font color="darkred">[</font>t<font color="darkred">]</font>.sort<font color="darkred">)</font>;
+
+    free_prevrule<font color="darkred">(</font><font color="red">&amp;</font>rules-&gt;pr<font color="darkred">)</font>;
+
+    rules-&gt;pr.prev = rules-&gt;pr.one;
+    rules-&gt;pr.one = <font color="blue">0</font>;
+
+    rules-&gt;pr.freep = r;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Add a pre-allocated rule to the list of rules, setting \a prev to \a one.
+    \param rules The array of existing rules.
+    \param cdat The pointer to the cdat structure for \a one's type.
+    \param sort The element to sort \a one by.
+    \return 1 if everything is taken care of and add_rule() may return. !!!
+*/</font>
+<font color="blue">int</font> add_allocated_rule<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">struct</font> onerule_t <font color="red">**</font>cdat,
+    <font color="darkblue">size_t</font> sort<font color="darkred">) {</font>
+
+    <font color="blue">if</font><font color="darkred">(</font>sort == <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!<font color="red">*</font>cdat<font color="darkred">)</font> <font color="red">*</font>cdat = rules-&gt;pr.one;
+        <font color="blue">else return 1</font>;
+    <font color="darkred">}</font>
+    <font color="blue">else</font> <font color="darkred">{</font>
+        <font color="blue">if</font><font color="darkred">(</font>add_rule_pos<font color="darkred">(</font>rules, sort, rules-&gt;pr.one<font color="darkred">)</font> == <font color="blue">2</font><font color="darkred">) {</font>
+            <font color="blue">return 1</font>;
+        <font color="darkred">}</font>
+
+        rules-&gt;data.number ++;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Separates the parts of the rule \a str and adds them to \a data, which is a
+    structure containing an array of strings. If a part is "*", it is assigned
+    the value of the same section of the previous rule (determined from
+    \a prev).
+    \param data The structure to add the parts of the rule \a str to.
+    \param prev The structure containing the parts of the previous rule (or
+        NULL if this is the first rule).
+    \param str The string representing the current rule, with all its parts.
+*/</font>
+<font color="blue">void</font> add_parts<font color="darkred">(</font><font color="blue">struct</font> strings_t <font color="red">*</font>data, <font color="blue">const struct</font> strings_t <font color="red">*</font>prev,
+    <font color="blue">const char</font> <font color="red">*</font>str<font color="darkred">) {</font>
+
+    <font color="blue">const char</font> <font color="red">*</font>p = str;
+
+    <font color="blue">do</font> <font color="darkred">{</font>
+        p = strchr<font color="darkred">(</font>p, <font color="red">':'</font><font color="darkred">)</font>;
+
+        <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">) {</font>  <font color="green">/* No more ':'s */</font>
+            <font color="blue">if</font><font color="darkred">(</font>prev <font color="red">&amp;&amp; *</font>str == <font color="red">'*'</font> <font color="red">&amp;&amp;</font> !str<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]</font> <font color="red">&amp;&amp;</font> data-&gt;number &lt; prev-&gt;number<font color="darkred">) {</font>
+                add_string_copy<font color="darkred">(</font>data, prev<font color="darkred">)</font>;
+            <font color="darkred">}</font>
+            <font color="blue">else</font> add_string<font color="darkred">(</font>data, str<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+        <font color="blue">else</font> <font color="darkred">{</font>
+            <font color="blue">if</font><font color="darkred">(</font>!is_backslashed<font color="darkred">(</font>str, p<font color="darkred">)) {</font>
+                <font color="blue">if</font><font color="darkred">(</font>prev <font color="red">&amp;&amp; *</font>str == <font color="red">'*'</font> <font color="red">&amp;&amp;</font> str<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]</font> == <font color="red">':'</font><font color="darkred">) {</font>
+                    add_string_copy<font color="darkred">(</font>data, prev<font color="darkred">)</font>;
+                <font color="darkred">}</font>
+                <font color="blue">else</font> add_string_len<font color="darkred">(</font>data, str, p-str<font color="darkred">)</font>;
+
+                str = p+<font color="blue">1</font>;
+            <font color="darkred">}</font>
+
+            p ++;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font> <font color="blue">while</font><font color="darkred">(</font>p<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Checks to see if the number of parts in the rule \a str has at least
+    \a rparts (required parts) with an optional up to \a xparts extra parts.
+    \param rparts Minimum number of required parts for the rule \a str to have.
+    \param xparts Optional number of extra parts in addition to \a rparts.
+    \param str The string to check the parts of.
+    \return True if the number of parts is in the range rparts to
+        rparts+xparts.
+*/</font>
+<font color="blue">int</font> check_parts<font color="darkred">(</font><font color="blue">int</font> rparts, <font color="blue">int</font> xparts, <font color="blue">const char</font> <font color="red">*</font>str<font color="darkred">) {</font>
+    <font color="blue">const char</font> <font color="red">*</font>s = str, <font color="red">*</font>p;
+    <font color="blue">int</font> parts = <font color="blue">0</font>;
+
+    <font color="blue">do</font> <font color="darkred">{</font>
+        p = strchr<font color="darkred">(</font>s, <font color="red">':'</font><font color="darkred">)</font>;
+        <font color="blue">if</font><font color="darkred">(</font>!p <font color="red">&amp;&amp; *</font>s<font color="darkred">) {</font>
+            parts ++;
+        <font color="darkred">}</font>
+        <font color="blue">else</font> <font color="darkred">{</font>
+            <font color="blue">if</font><font color="darkred">(</font>!is_backslashed<font color="darkred">(</font>str, p<font color="darkred">)) {</font>
+                parts ++;
+                str = s = p+<font color="blue">1</font>;
+            <font color="darkred">}</font>
+            <font color="blue">else</font> s ++;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font> <font color="blue">while</font><font color="darkred">(</font>p<font color="darkred">)</font>;
+
+    <font color="blue">return</font> parts &gt;= rparts <font color="red">&amp;&amp;</font> parts &lt;= rparts+xparts;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Calls remove_escapes() for every string in the strings structure \a data.
+    \param data The structure containing strings to remove escapes from.
+*/</font>
+<font color="blue">void</font> process_escapes<font color="darkred">(</font><font color="blue">struct</font> strings_t <font color="red">*</font>data<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; data-&gt;number; x ++<font color="darkred">) {</font>
+        remove_escapes<font color="darkred">(</font><font color="red">&amp;</font>data-&gt;data<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">&amp;</font>data-&gt;len<font color="darkred">[</font>x<font color="darkred">])</font>;
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Removes characters in \a str, replacing them with what they represent. "\n"
+    turns into a newline. (To do this, a character must be removed, for "\n" is
+    two characters and a newline one; remove_char() is called to this end.)
+    \param str The string to remove escaped characters from.
+    \param len The length of the string, decremented for each escape sequence
+        replaced.
+*/</font>
+<font color="blue">void</font> remove_escapes<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>str, <font color="darkblue">size_t</font> <font color="red">*</font>len<font color="darkred">) {</font>
+    <font color="blue">char</font> <font color="red">*</font>p;
+    <font color="darkblue">size_t</font> olen = <font color="red">*</font>len;
+
+    <font color="blue">for</font><font color="darkred">(</font>p = <font color="red">*</font>str; <font color="darkred">(</font>p = strchr<font color="darkred">(</font>p, <font color="red">'\\'</font><font color="darkred">))</font>; p ++<font color="darkred">) {</font>
+        remove_char<font color="darkred">(</font>p<font color="darkred">)</font>;
+
+        <font color="blue">switch</font><font color="darkred">(</font><font color="red">*</font>p<font color="darkred">) {</font>
+        <font color="blue">case</font> <font color="red">'n'</font>:
+            <font color="red">*</font>p = <font color="red">'\n'</font>;
+            <font color="blue">break</font>;
+        <font color="blue">case</font> <font color="red">'t'</font>:
+            <font color="red">*</font>p = <font color="red">'\t'</font>;
+            <font color="blue">break</font>;
+        <font color="blue">default</font>: <font color="blue">break</font>;
+        <font color="darkred">}</font>
+
+        <font color="darkred">(</font><font color="red">*</font>len<font color="darkred">)</font> --;
+    <font color="darkred">}</font>
+
+    <font color="blue">if</font><font color="darkred">(</font><font color="red">*</font>len != olen<font color="darkred">)</font> shrink_string<font color="darkred">(</font>str, <font color="red">*</font>len<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Calls replace_var_str() for every string in \a data.
+    \param vars A structure containing an array of variables.
+    \param data The data to apply the variables to.
+*/</font>
+<font color="blue">void</font> process_vars<font color="darkred">(</font><font color="blue">const struct</font> rulevars_t <font color="red">*</font>vars, <font color="blue">struct</font> strings_t <font color="red">*</font>data<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; data-&gt;number; x ++<font color="darkred">) {</font>
+        replace_var_str<font color="darkred">(</font>vars, <font color="red">&amp;</font>data-&gt;data<font color="darkred">[</font>x<font color="darkred">])</font>;
+        data-&gt;len<font color="darkred">[</font>x<font color="darkred">]</font> = strlen<font color="darkred">(</font>data-&gt;data<font color="darkred">[</font>x<font color="darkred">])</font>;  <font color="green">/* !!! can be determined */</font>
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! For every '$' sign in \a str, calls replace_onevar() with every variable,
+    looking for a match.
+    \param vars The structure containing the array of variables.
+    \param str The string to replace occurences of $variable_name with the
+        value of the variable variable_name.
+*/</font>
+<font color="blue">void</font> replace_var_str<font color="darkred">(</font><font color="blue">const struct</font> rulevars_t <font color="red">*</font>vars, <font color="blue">char</font> <font color="red">**</font>str<font color="darkred">) {</font>
+    <font color="blue">char</font> <font color="red">*</font>p, <font color="red">*</font>end;
+
+    <font color="blue">for</font><font color="darkred">(</font>p = <font color="red">*</font>str; <font color="darkred">(</font>p = strchr<font color="darkred">(</font>p, <font color="red">'$'</font><font color="darkred">))</font>; p ++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!is_backslashed<font color="darkred">(</font><font color="red">*</font>str, p<font color="darkred">)</font> <font color="red">&amp;&amp;</font> p<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]</font> == <font color="red">'('</font>
+            <font color="red">&amp;&amp;</font> <font color="darkred">(</font>end = strchr<font color="darkred">(</font>p+<font color="blue">2</font>, <font color="red">')'</font><font color="darkred">))) {</font>
+
+            find_var_replace<font color="darkred">(</font>vars, str, <font color="red">&amp;</font>p, end<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Resizes the string str to len characters in size. If the memory block was
+    moved, points pos to the same position relative to the new memory block as
+    it was relative to str.
+    \param str The string to resize to \a len characters long.
+    \param pos The position to move if str changes.
+    \param len The new size of the string.
+*/</font>
+<font color="blue">void</font> resize_var_string<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>str, <font color="blue">char</font> <font color="red">**</font>pos, <font color="darkblue">size_t</font> len<font color="darkred">) {</font>
+    <font color="blue">char</font> <font color="red">*</font>p = realloc<font color="darkred">(</font><font color="red">*</font>str, len<font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">) {</font>
+        out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+
+    <font color="red">*</font>pos = <font color="red">*</font>pos-<font color="red">*</font>str + p;
+    <font color="red">*</font>str = p;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Binary searches through the existing variables in \a rt for the variable
+    matching the string \a str, calling the function to replace the variable
+    with the text for that variable.
+    \param vars The existing variables to search through.
+    \param str The string containing the variable to search for.
+    \param p The start of the variable to look for (position of the '$').
+    \param end The end of the variable to look for (position of the ')').
+*/</font>
+<font color="blue">void</font> find_var_replace<font color="darkred">(</font><font color="blue">const struct</font> rulevars_t <font color="red">*</font>vars, <font color="blue">char</font> <font color="red">**</font>str, <font color="blue">char</font> <font color="red">**</font>p,
+    <font color="blue">char</font> <font color="red">*</font>end<font color="darkred">) {</font>
+
+    <font color="darkblue">size_t</font> mid = <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>, first = <font color="blue">0</font>, last = vars-&gt;number-<font color="blue">1</font>;
+    <font color="darkblue">size_t</font> pos = <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>;
+    <font color="blue">int</font> v = <font color="blue">0</font>;
+
+    pos = <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!vars-&gt;number<font color="darkred">)</font> <font color="blue">return</font>;
+
+    <font color="blue">while</font><font color="darkred">(</font>first &lt;= last <font color="red">&amp;&amp;</font> last != <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">) {</font>
+        mid = <font color="darkred">(</font>first + last<font color="darkred">)</font> / <font color="blue">2</font>;
+
+        v = replace_onevar<font color="darkred">(</font>vars-&gt;data<font color="darkred">[</font>mid<font color="darkred">]</font>, str, p, end<font color="darkred">)</font>;
+
+        <font color="blue">if</font><font color="darkred">(</font>v &lt; <font color="blue">0</font><font color="darkred">)</font> last = mid-<font color="blue">1</font>;
+        <font color="blue">else if</font><font color="darkred">(</font>v &gt; <font color="blue">0</font><font color="darkred">)</font> first = mid+<font color="blue">1</font>;
+        <font color="blue">else</font> <font color="darkred">{</font>
+            pos = mid;
+            first = mid+<font color="blue">1</font>;
+
+            <font color="red">*</font>p = <font color="red">*</font>str-<font color="blue">1</font>;
+            <font color="blue">break</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    <font color="blue">if</font><font color="darkred">(</font>pos == <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">) {</font>
+        replace_novar<font color="darkred">(</font>end-<font color="red">*</font>p-<font color="blue">2</font>, str, p<font color="darkred">)</font>;
+        <font color="darkred">(</font><font color="red">*</font>p<font color="darkred">)</font> --;
+    <font color="darkred">}</font>
+    <font color="blue">else</font> <font color="darkred">{</font>
+        <font color="blue">if</font><font color="darkred">(</font>v &lt; <font color="blue">0</font><font color="darkred">)</font> pos = mid;
+        <font color="blue">else</font> pos = mid+<font color="blue">1</font>;
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Replaces the position \a pos in the string \a str (if it matches a '$' and
+    the variable's name) with the text the variable is replaced with.
+    \param var A structure containing the variable's name and text to replace
+        with.
+    \param str The string containing the variable.
+    \param pos The start of the string to do the replacing in (dynamically
+        reallocated to the new size).
+    \param end The position in \a str of the '$' in a variable name.
+    \return Nonzero if a text substitution was made.
+*/</font>
+<font color="blue">int</font> replace_onevar<font color="darkred">(</font><font color="blue">const struct</font> onevar_t <font color="red">*</font>var, <font color="blue">char</font> <font color="red">**</font>str, <font color="blue">char</font> <font color="red">**</font>pos,
+    <font color="blue">char</font> <font color="red">*</font>end<font color="darkred">) {</font>
+
+    <font color="darkblue">size_t</font> olen, plen;
+    <font color="blue">int</font> v;
+
+    <font color="blue">if</font><font color="darkred">(</font>!<font color="darkred">(</font>v = strncmp<font color="darkred">(</font><font color="red">*</font>pos+<font color="blue">2</font>, var-&gt;from, end - <font color="red">*</font>pos - <font color="blue">2</font><font color="darkred">))) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>var-&gt;from<font color="darkred">[</font>end - <font color="red">*</font>pos - <font color="blue">2</font><font color="darkred">])</font> <font color="blue">return</font> -<font color="blue">1</font>;
+
+        olen = strlen<font color="darkred">(</font><font color="red">*</font>str<font color="darkred">)</font>;
+        plen = olen + <font color="red">*</font>str - <font color="red">*</font>pos;
+
+        <font color="blue">if</font><font color="darkred">(</font>var-&gt;flen+<font color="blue">2</font> &lt; var-&gt;tlen<font color="darkred">) {</font>
+            resize_var_string<font color="darkred">(</font>str, pos, olen - var-&gt;flen + var-&gt;tlen - <font color="blue">2</font><font color="darkred">)</font>;
+
+            memmove<font color="darkred">(</font><font color="red">*</font>pos + var-&gt;tlen, <font color="red">*</font>pos + var-&gt;flen+<font color="blue">3</font>, plen - var-&gt;flen-<font color="blue">2</font><font color="darkred">)</font>;
+        <font color="darkred">}</font>
+        <font color="blue">else</font> <font color="darkred">{</font>
+            memmove<font color="darkred">(</font><font color="red">*</font>pos + var-&gt;tlen, <font color="red">*</font>pos + var-&gt;flen+<font color="blue">3</font>, plen - var-&gt;flen-<font color="blue">2</font><font color="darkred">)</font>;
+
+            resize_var_string<font color="darkred">(</font>str, pos, olen - var-&gt;flen + var-&gt;tlen - <font color="blue">2</font><font color="darkred">)</font>;
+        <font color="darkred">}</font>
+
+        memmove<font color="darkred">(</font><font color="red">*</font>pos, var-&gt;to, var-&gt;tlen<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return</font> v;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Replaces the variable at \a pos in the string \a str with a null value, "".
+    \param cp The length of the variable.
+    \param str The start of the string to do the replacing in (dynamically
+        reallocated to the new size).
+    \param pos The position in \a str of the variable.
+*/</font>
+<font color="blue">void</font> replace_novar<font color="darkred">(</font><font color="darkblue">size_t</font> cp, <font color="blue">char</font> <font color="red">**</font>str, <font color="blue">char</font> <font color="red">**</font>pos<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> olen, plen;
+
+    olen = strlen<font color="darkred">(</font><font color="red">*</font>str<font color="darkred">)</font>;
+    plen = olen + <font color="red">*</font>str - <font color="red">*</font>pos;
+
+    memmove<font color="darkred">(</font><font color="red">*</font>pos, <font color="red">*</font>pos + cp+<font color="blue">3</font>, plen - cp-<font color="blue">2</font><font color="darkred">)</font>;
+
+    resize_var_string<font color="darkred">(</font>str, pos, olen - cp-<font color="blue">2</font><font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Returns the number of the header that the rule \a str represents.
+    \param rules The rules structure that holds the types.
+    \param str The string representing the rule that may be a header.
+    \param type A pointer to set to the type of the header.
+    \return Zero if \a str is not a header; (size_t)-1 if it is a nonexistent
+        header; 1 if it is a header; and the position of the end of the header
+        (&gt;= 2) if it is an inline header.
+*/</font>
+<font color="darkblue">size_t</font> get_type<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>str, <font color="blue">enum</font> type_t <font color="red">*</font>type<font color="darkred">) {</font>
+    <font color="blue">enum</font> type_t x;
+    <font color="blue">const char</font> <font color="red">*</font>p;
+    <font color="darkblue">size_t</font> len = <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font><font color="red">*</font>str != <font color="red">'='</font><font color="darkred">)</font> <font color="blue">return 0</font>;
+    <font color="blue">if</font><font color="darkred">((</font>p = strchr<font color="darkred">(</font>str, <font color="red">':'</font><font color="darkred">)))</font> len = p-str-<font color="blue">1</font>;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; TYPES; x ++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!strncmp<font color="darkred">(</font>rules-&gt;type<font color="darkred">[</font>x<font color="darkred">]</font>.name, str+<font color="blue">1</font>, len<font color="darkred">)) {</font>
+            <font color="red">*</font>type = x;
+            <font color="blue">return</font> <font color="darkred">(</font>p ? len+<font color="blue">2</font> : <font color="blue">1</font><font color="darkred">)</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    <font color="blue">return</font> <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Opens all the input files and pass them on to read_file(). Copies the other
+    output files from the first output file with copy_file().
+    \param rules The structure containing all the rules.
+    \param inputfn The strings_t structure with all the input file names.
+    \param outputfn The files to write to. All the data is written to the first
+        one, and that file is then copied to all the others.
+*/</font>
+<font color="blue">void</font> parse_files<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">struct</font> strings_t <font color="red">*</font>inputfn,
+    <font color="blue">struct</font> strings_t <font color="red">*</font>outputfn<font color="darkred">) {</font>
+
+    <font color="darkblue">FILE</font> <font color="red">*</font>out = <font color="blue">0</font>;
+    <font color="darkblue">size_t</font> x, y;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; outputfn-&gt;number
+        <font color="red">&amp;&amp;</font> !<font color="darkred">(</font>out = open_file<font color="darkred">(</font>outputfn-&gt;data<font color="darkred">[</font>x<font color="darkred">]</font>, <font color="red">"w+"</font><font color="darkred">))</font>; x ++<font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!out<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>x<font color="darkred">)</font> fprintf<font color="darkred">(</font>stderr, <font color="red">"codeform: No output files could be opened,"</font>
+            <font color="red">" using stdout\n"</font><font color="darkred">)</font>;
+        out = stdout;
+    <font color="darkred">}</font>
+
+    <font color="blue">for</font><font color="darkred">(</font>y = <font color="blue">0</font>; y &lt; inputfn-&gt;number; y ++<font color="darkred">) {</font>
+        read_file<font color="darkred">(</font>rules, inputfn-&gt;data<font color="darkred">[</font>y<font color="darkred">]</font>, out<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">if</font><font color="darkred">(</font>!inputfn-&gt;number<font color="darkred">)</font> read_file<font color="darkred">(</font>rules, <font color="red">"-"</font>, out<font color="darkred">)</font>;
+
+    <font color="blue">for</font><font color="darkred">(</font>y = <font color="blue">1</font>; y &lt; outputfn-&gt;number; y ++<font color="darkred">) {</font>
+        copy_file<font color="darkred">(</font>out, outputfn-&gt;data<font color="darkred">[</font>y<font color="darkred">])</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">if</font><font color="darkred">(</font>out != stdout<font color="darkred">)</font> fclose<font color="darkred">(</font>out<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Reads from the file \a fn, passing each line read to parse_line().
+    Determines when the end or the start of the file \a fn has been reached,
+    passing this information on to parse_line().
+    \param rules Used only to pass on to parse_line().
+    \param fn The filename to read from.
+    \param out Used only to pass on to parse_line().
+*/</font>
+<font color="blue">void</font> read_file<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>fn, <font color="darkblue">FILE</font> <font color="red">*</font>out<font color="darkred">) {</font>
+    <font color="darkblue">FILE</font> <font color="red">*</font>in = open_file<font color="darkred">(</font>fn, <font color="red">"r"</font><font color="darkred">)</font>;
+    <font color="blue">char</font> <font color="red">*</font>line = malloc<font color="darkred">(</font>BUFSIZ<font color="darkred">)</font>;
+    <font color="blue">struct</font> typefunc_t tf;
+    <font color="darkblue">size_t</font> len, alen = BUFSIZ;
+    <font color="blue">int</font> quit = <font color="blue">0</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!in<font color="darkred">)</font> <font color="blue">return</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!line<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+    <font color="red">*</font>line = <font color="blue">0</font>;
+
+    tf.func.which = <font color="blue">0</font>;
+    tf.func.type = <font color="blue">0</font>;
+    tf.func.number = <font color="blue">0</font>;
+    tf.func.nest = <font color="blue">1</font>;
+    tf.pos = POS_START;
+    tf.list = <font color="red">&amp;</font>rules-&gt;list;
+
+    tf.out = out;
+    parse_line<font color="darkred">(</font>rules, line, out, <font color="red">&amp;</font>tf<font color="darkred">)</font>;
+
+    <font color="blue">do</font> <font color="darkred">{</font>
+        len = <font color="blue">0</font>;
+
+        <font color="blue">if</font><font color="darkred">(</font>!get_string<font color="darkred">(</font><font color="red">&amp;</font>line, <font color="blue">0</font>, <font color="red">&amp;</font>alen, in<font color="darkred">)) {</font>
+            tf.pos |= POS_END;
+            quit = <font color="blue">1</font>;
+        <font color="darkred">}</font>
+
+        tf.out = out;
+        parse_line<font color="darkred">(</font>rules, line, out, <font color="red">&amp;</font>tf<font color="darkred">)</font>;
+
+        tf.pos = <font color="blue">0</font>;
+    <font color="darkred">}</font> <font color="blue">while</font><font color="darkred">(</font>!quit<font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>in != stdin<font color="darkred">)</font> fclose<font color="darkred">(</font>in<font color="darkred">)</font>;
+
+    free<font color="darkred">(</font>line<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Parses a line from an input file, calling type_funcs for every character.
+    If one call is successful, calls each type_func again.
+    \param rules The structure containing all the rules for parsing.
+    \param line The line from the input file to parse.
+    \param out The output file stream to write the results to.
+    \param tf The structure that is passed to all the type_func functions,
+        along with the rule_t structure appropriate for it.
+*/</font>
+<font color="blue">void</font> parse_line<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">char</font> <font color="red">*</font>line, <font color="darkblue">FILE</font> <font color="red">*</font>out,
+    <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+
+    <font color="blue">char</font> <font color="red">*</font>p = line;
+    <font color="blue">int</font> iw = <font color="blue">0</font>, redo;
+
+    tf-&gt;p = <font color="red">&amp;</font>p;
+
+    <font color="blue">do</font> <font color="darkred">{</font>
+        <font color="blue">do</font> <font color="darkred">{</font>
+            redo = <font color="blue">0</font>;
+
+            tf-&gt;iw = iw;
+            tf-&gt;n = p - line;
+
+            <font color="blue">if</font><font color="darkred">(</font>tf-&gt;func.number<font color="darkred">) {</font>
+                <font color="blue">if</font><font color="darkred">(</font>call_one_type<font color="darkred">(</font>rules, tf<font color="darkred">)</font> || call_type_cdat<font color="darkred">(</font>rules, tf<font color="darkred">)) {</font>
+                    redo = <font color="blue">1</font>;
+                <font color="darkred">}</font>
+            <font color="darkred">}</font>
+
+            <font color="blue">if</font><font color="darkred">(</font>!redo <font color="red">&amp;&amp;</font> call_type_funcs<font color="darkred">(</font>rules, tf<font color="darkred">))</font> redo = <font color="blue">1</font>;
+
+            <font color="blue">if</font><font color="darkred">(</font>!redo<font color="darkred">) {</font>
+                <font color="blue">if</font><font color="darkred">(</font><font color="red">*</font>p<font color="darkred">) {</font>
+                    <font color="blue">if</font><font color="darkred">(</font>!isspace<font color="darkred">(</font><font color="red">*</font>p<font color="darkred">)) {</font>
+                        append_rulelist<font color="darkred">(</font><font color="blue">0</font>, <font color="blue">0</font>, <font color="red">&amp;</font>rules-&gt;list, out<font color="darkred">)</font>;
+                        putc<font color="darkred">(</font><font color="red">*</font>p, out<font color="darkred">)</font>;
+                    <font color="darkred">}</font>
+                    <font color="blue">else if</font><font color="darkred">(</font>rules-&gt;list.to<font color="darkred">) {</font>
+                        add_ws_rulelist<font color="darkred">(</font><font color="red">&amp;</font>rules-&gt;list, <font color="red">*</font>p<font color="darkred">)</font>;
+                    <font color="darkred">}</font>
+                    <font color="blue">else</font> putc<font color="darkred">(</font><font color="red">*</font>p, out<font color="darkred">)</font>;
+                <font color="darkred">}</font>
+
+                iw = is_word<font color="darkred">(</font><font color="red">*</font>p<font color="darkred">)</font>;
+            <font color="darkred">}</font>
+            <font color="blue">else</font> iw = is_word_prev<font color="darkred">(</font>line, p<font color="darkred">)</font>;
+        <font color="darkred">}</font> <font color="blue">while</font><font color="darkred">(</font>redo<font color="darkred">)</font>;
+    <font color="darkred">}</font> <font color="blue">while</font><font color="darkred">(</font><font color="red">*</font>p++<font color="darkred">)</font>;
+
+    append_rulelist<font color="darkred">(</font><font color="blue">0</font>, <font color="blue">0</font>, <font color="red">&amp;</font>rules-&gt;list, out<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Calls the type_func function that may end the latest comment.
+    \param rules The structure containing the rules and types.
+    \param tf The structure that is passed to the type_func function.
+    \return Nonzero if the type_func function ended the comment.
+*/</font>
+<font color="blue">int</font> call_one_type<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">int</font> r;
+
+    tf-&gt;number = tf-&gt;func.which<font color="darkred">[</font>tf-&gt;func.number-<font color="blue">1</font><font color="darkred">]</font>;
+    tf-&gt;type = tf-&gt;func.type<font color="darkred">[</font>tf-&gt;func.number-<font color="blue">1</font><font color="darkred">]</font>;
+
+    r = <font color="darkred">(</font><font color="red">*</font>rules-&gt;type<font color="darkred">[</font>tf-&gt;type<font color="darkred">]</font>.func<font color="darkred">)</font>
+        <font color="darkred">(</font>rules-&gt;data.data<font color="darkred">[</font>tf-&gt;number<font color="darkred">]</font>, tf<font color="darkred">)</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>r &lt; <font color="blue">0</font><font color="darkred">)</font> remove_from_funclist<font color="darkred">(</font><font color="red">&amp;</font>tf-&gt;func<font color="darkred">)</font>;
+
+    <font color="blue">return</font> r;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Calls the type_func functions that have a sort of \c (size_t)-1, which have
+    only one rule, stored in the cdat[] array in \a rules.
+    \param rules The structure containing the cdat array and sorts for the
+        type_func functions.
+    \param tf The structure that is passed to the type_func functions.
+    \return True if one of the functions called returned true.
+*/</font>
+<font color="blue">int</font> call_type_cdat<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">enum</font> type_t x;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; TYPES; x ++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>rules-&gt;type<font color="darkred">[</font>x<font color="darkred">]</font>.sort == <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font> <font color="red">&amp;&amp;</font> rules-&gt;cdat<font color="darkred">[</font>x<font color="darkred">]) {</font>
+            tf-&gt;number = <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>;
+            tf-&gt;type = x;
+
+            <font color="blue">if</font><font color="darkred">((</font><font color="red">*</font>rules-&gt;type<font color="darkred">[</font>x<font color="darkred">]</font>.func<font color="darkred">)(</font>rules-&gt;cdat<font color="darkred">[</font>x<font color="darkred">]</font>, tf<font color="darkred">)) {</font>
+                <font color="blue">return 1</font>;
+            <font color="darkred">}</font>
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Calls the appropriate type_func function for a rule if a match to the
+    current position in the line was found.
+    \param rules The structure containing the rules to search through.
+    \param tf The structure passed to the type_func functions.
+    \return True if a function was called.
+*/</font>
+<font color="blue">int</font> call_type_funcs<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> match;
+
+    <font color="blue">if</font><font color="darkred">(</font>call_type_cdat<font color="darkred">(</font>rules, tf<font color="darkred">))</font> <font color="blue">return 1</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>find_rule_match<font color="darkred">(</font>rules, <font color="red">*</font>tf-&gt;p, <font color="red">&amp;</font>match<font color="darkred">)) {</font>
+        tf-&gt;number = match;
+        tf-&gt;type = rules-&gt;data.data<font color="darkred">[</font>match<font color="darkred">]</font>-&gt;type;
+
+        <font color="blue">if</font><font color="darkred">((</font><font color="red">*</font>rules-&gt;type<font color="darkred">[</font>tf-&gt;type<font color="darkred">]</font>.func<font color="darkred">)(</font>rules-&gt;data.data<font color="darkred">[</font>match<font color="darkred">]</font>, tf<font color="darkred">)) {</font>
+            <font color="blue">return 1</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Sets the prev members of every rule in \a rules, calling set_follow_prev()
+    for each rule.
+    \param rules The structure containing the rules to set the prev member of.
+*/</font>
+<font color="blue">void</font> set_rules_prev<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x, y;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; TYPES; x ++<font color="darkred">) {</font>
+        <font color="blue">for</font><font color="darkred">(</font>y = <font color="blue">0</font>; y &lt; rules-&gt;data.number; y ++<font color="darkred">) {</font>
+            <font color="blue">if</font><font color="darkred">(</font>rules-&gt;type<font color="darkred">[</font>x<font color="darkred">]</font>.sort != <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">) {</font>
+                set_follow_prev<font color="darkred">(</font>rules, y<font color="darkred">)</font>;
+            <font color="darkred">}</font>
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Sets the prev members of the structures following the rule \a start to
+    \a start if their first characters (the length of the rule \a start) match
+    the characters in the rule \a start.
+    \param rules The structure containing the rules and sorts.
+    \param start The element in the array of rules to start at (and set prevs
+        to).
+*/</font>
+<font color="blue">void</font> set_follow_prev<font color="darkred">(</font><font color="blue">struct</font> rules_t <font color="red">*</font>rules, <font color="darkblue">size_t</font> start<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x;
+
+    <font color="blue">for</font><font color="darkred">(</font>x = start+<font color="blue">1</font>; x &lt; rules-&gt;data.number; x ++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>strncmp<font color="darkred">(</font>rules-&gt;data.data<font color="darkred">[</font>start<font color="darkred">]</font>-&gt;data
+                .data<font color="darkred">[</font>rules-&gt;type<font color="darkred">[</font>rules-&gt;data.data<font color="darkred">[</font>start<font color="darkred">]</font>-&gt;type<font color="darkred">]</font>.sort<font color="darkred">]</font>,
+            rules-&gt;data.data<font color="darkred">[</font>x<font color="darkred">]</font>-&gt;data
+                .data<font color="darkred">[</font>rules-&gt;type<font color="darkred">[</font>rules-&gt;data.data<font color="darkred">[</font>x<font color="darkred">]</font>-&gt;type<font color="darkred">]</font>.sort<font color="darkred">]</font>,
+            rules-&gt;data.data<font color="darkred">[</font>start<font color="darkred">]</font>-&gt;data
+                .len<font color="darkred">[</font>rules-&gt;type<font color="darkred">[</font>rules-&gt;data.data<font color="darkred">[</font>start<font color="darkred">]</font>-&gt;type<font color="darkred">]</font>.sort<font color="darkred">])) {</font>
+
+            <font color="blue">break</font>;
+        <font color="darkred">}</font>
+
+        rules-&gt;data.data<font color="darkred">[</font>x<font color="darkred">]</font>-&gt;prev = start;
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Executes a binary search for \a p in the existing rules in \a rt. The
+    longest match is assigned to \a pos.
+    \param rules The array of existing rules to search through.
+    \param p The string to search through the rules for.
+    \param pos The variable to set to the longest match found, if any; if none,
+        set to (size_t)-1.
+    \return 1 if an exact match was found, 0 otherwise.
+*/</font>
+<font color="blue">int</font> find_rule_match<font color="darkred">(</font><font color="blue">const struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>p, <font color="darkblue">size_t</font> <font color="red">*</font>pos<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>find_rule_new<font color="darkred">(</font>rules, p, pos<font color="darkred">))</font> <font color="blue">return 1</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font><font color="red">*</font>pos &lt; rules-&gt;data.number<font color="darkred">)</font> <font color="blue">return</font> find_rule_prev<font color="darkred">(</font>rules, p, pos<font color="darkred">)</font>;
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Binary searches through the existing rules in \a rt for the position that
+    the rule \a p should be in, putting the result in \a pos.
+    \param rules The structure containing the array of existing rules.
+    \param p The new rule to search for.
+    \param pos The variable to store the position found in. Set to (size_t)-1
+        if no match was found.
+    \return 1 if an exact match (to the shortest length) was found, 0
+        otherwise. 2 if an exact match the whole way was found.
+*/</font>
+<font color="blue">int</font> find_rule_new<font color="darkred">(</font><font color="blue">const struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>p, <font color="darkblue">size_t</font> <font color="red">*</font>pos<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> mid = <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>, first = <font color="blue">0</font>, last = rules-&gt;data.number-<font color="blue">1</font>, sort;
+    <font color="blue">int</font> v = <font color="blue">0</font>;
+
+    <font color="red">*</font>pos = <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>!rules-&gt;data.number<font color="darkred">)</font> <font color="blue">return 0</font>;
+
+    <font color="blue">while</font><font color="darkred">(</font>first &lt;= last <font color="red">&amp;&amp;</font> last != <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">) {</font>
+        mid = <font color="darkred">(</font>first + last<font color="darkred">)</font> / <font color="blue">2</font>;
+        sort = rules-&gt;type<font color="darkred">[</font>rules-&gt;data.data<font color="darkred">[</font>mid<font color="darkred">]</font>-&gt;type<font color="darkred">]</font>.sort;
+
+        v = strncmp<font color="darkred">(</font>p, rules-&gt;data.data<font color="darkred">[</font>mid<font color="darkred">]</font>-&gt;data.data<font color="darkred">[</font>sort<font color="darkred">]</font>,
+            rules-&gt;data.data<font color="darkred">[</font>mid<font color="darkred">]</font>-&gt;data.len<font color="darkred">[</font>sort<font color="darkred">])</font>;
+
+        <font color="blue">if</font><font color="darkred">(</font>first == last <font color="red">&amp;&amp;</font> v<font color="darkred">)</font> <font color="blue">break</font>;
+
+        <font color="blue">if</font><font color="darkred">(</font>v &lt; <font color="blue">0</font><font color="darkred">)</font> last = mid-<font color="blue">1</font>;
+        <font color="blue">else if</font><font color="darkred">(</font>v &gt; <font color="blue">0</font><font color="darkred">)</font> first = mid+<font color="blue">1</font>;
+        <font color="blue">else</font> <font color="darkred">{</font>
+            <font color="red">*</font>pos = mid;
+
+            <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">[</font>rules-&gt;data.data<font color="darkred">[</font>mid<font color="darkred">]</font>-&gt;data.len<font color="darkred">[</font>sort<font color="darkred">]])</font> <font color="blue">return 2</font>;
+
+            first = mid+<font color="blue">1</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    <font color="blue">if</font><font color="darkred">(</font><font color="red">*</font>pos != <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">)</font> <font color="blue">return 1</font>;
+
+    <font color="blue">if</font><font color="darkred">(</font>v &lt; <font color="blue">0</font><font color="darkred">)</font> <font color="red">*</font>pos = mid;
+    <font color="blue">else</font> <font color="red">*</font>pos = mid+<font color="blue">1</font>;
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Follows the prev members of rules until a match with \a p is found.
+    \param rules The array of rules.
+    \param p The string to match with a rule.
+    \param pos The closest match found so far.
+    \return 1 if a match was found, 0 if not.
+*/</font>
+<font color="blue">int</font> find_rule_prev<font color="darkred">(</font><font color="blue">const struct</font> rules_t <font color="red">*</font>rules, <font color="blue">const char</font> <font color="red">*</font>p, <font color="darkblue">size_t</font> <font color="red">*</font>pos<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> n = <font color="red">*</font>pos-<font color="blue">1</font>, sort;
+
+    <font color="blue">if</font><font color="darkred">(</font><font color="red">*</font>pos<font color="darkred">) {</font>
+        <font color="blue">while</font><font color="darkred">(</font>rules-&gt;data.data<font color="darkred">[</font>n<font color="darkred">]</font>-&gt;prev != <font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">)</font>-<font color="blue">1</font><font color="darkred">) {</font>
+            n = rules-&gt;data.data<font color="darkred">[</font>n<font color="darkred">]</font>-&gt;prev;
+            sort = rules-&gt;type<font color="darkred">[</font>rules-&gt;data.data<font color="darkred">[</font>n<font color="darkred">]</font>-&gt;type<font color="darkred">]</font>.sort;
+
+            <font color="blue">if</font><font color="darkred">(</font>!strncmp<font color="darkred">(</font>p, rules-&gt;data.data<font color="darkred">[</font>n<font color="darkred">]</font>-&gt;data.data<font color="darkred">[</font>sort<font color="darkred">]</font>,
+                rules-&gt;data.data<font color="darkred">[</font>n<font color="darkred">]</font>-&gt;data.len<font color="darkred">[</font>sort<font color="darkred">])) {</font>
+
+                <font color="red">*</font>pos = n;
+                <font color="blue">return 1</font>;
+            <font color="darkred">}</font>
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Copies the open file \a from to the filename \a fn. Rewinds the file
+    pointer \a from beforehand. \a fn is opened via open_file().
+    \param from The open file stream used as a source, to copy from.
+    \param fn A string containing the filename for the destination, to copy to.
+*/</font>
+<font color="blue">void</font> copy_file<font color="darkred">(</font><font color="darkblue">FILE</font> <font color="red">*</font>from, <font color="blue">const char</font> <font color="red">*</font>fn<font color="darkred">) {</font>
+    <font color="darkblue">FILE</font> <font color="red">*</font>to = open_file<font color="darkred">(</font>fn, <font color="red">"w"</font><font color="darkred">)</font>;
+    <font color="blue">int</font> c;
+
+    <font color="blue">if</font><font color="darkred">(</font>!to<font color="darkred">)</font> <font color="blue">return</font>;
+
+    rewind<font color="darkred">(</font>from<font color="darkred">)</font>;  <font color="green">/* Rewind the file pointer to the beginning. */</font>
+
+    <font color="blue">while</font><font color="darkred">((</font>c = getc<font color="darkred">(</font>from<font color="darkred">))</font> != EOF<font color="darkred">) {</font>
+        putc<font color="darkred">(</font>c, to<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">if</font><font color="darkred">(</font>to != stdout<font color="darkred">)</font> fclose<font color="darkred">(</font>to<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Returns true if \a p is a string representation of an integral number. A
+    number is one or more digits followed by a character that is not a period.
+    Thus floating point numbers are excluded.
+    \param p The string that may contain a number.
+    \return True if the string \a p represents an integral number.
+*/</font>
+<font color="blue">int</font> is_number<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>p<font color="darkred">) {</font>
+    <font color="blue">int</font> n = <font color="blue">0</font>;
+
+    <font color="blue">while</font><font color="darkred">(</font>isdigit<font color="darkred">(</font><font color="red">*</font>p<font color="darkred">))</font> p ++, n = <font color="blue">1</font>;
+
+    <font color="blue">return</font> n <font color="red">&amp;&amp; *</font>p != <font color="red">'.'</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Returns true if \a p is a string representation of a floating-point number.
+    A floating-point number is one or more optional digits plus a period plus
+    one or more optional digits. (At least one digit must be present.)
+    \param p The string to examine for a floating-point number.
+    \return True if the string \a p represents a floating-point number.
+*/</font>
+<font color="blue">int</font> is_fpnumber<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>p<font color="darkred">) {</font>
+    <font color="blue">int</font> n = <font color="blue">0</font>;  <font color="green">/* True if there was a digit before the period. */</font>
+
+    <font color="blue">while</font><font color="darkred">(</font>isdigit<font color="darkred">(</font><font color="red">*</font>p<font color="darkred">))</font> p ++, n = <font color="blue">1</font>;
+
+    <font color="blue">return</font> <font color="red">*</font>p == <font color="red">'.'</font> <font color="red">&amp;&amp;</font> <font color="darkred">(</font>n || isdigit<font color="darkred">(</font>p<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]))</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Prints any digits, periods and underscores starting from the beginning of
+    the string \a p to \a out. It stops printing characters when one that
+    doesn't meet the criteria is found. \a p is incremented to that character.
+    \param p The string to read characters from and to advance.
+    \param out The output stream to write the characters to.
+*/</font>
+<font color="blue">void</font> print_number<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>p, <font color="darkblue">FILE</font> <font color="red">*</font>out<font color="darkred">) {</font>
+    <font color="blue">while</font><font color="darkred">(</font>isalnum<font color="darkred">(</font><font color="red">**</font>p<font color="darkred">)</font> || <font color="red">**</font>p == <font color="red">'.'</font> || <font color="red">**</font>p == <font color="red">'_'</font><font color="darkred">) {</font>
+        fputc<font color="darkred">(</font><font color="red">*</font><font color="darkred">(</font><font color="red">*</font>p<font color="darkred">)</font>++, out<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Returns true if the string \a p is escaped. A character is escaped if it
+    has an odd number of backslashes preceding it. \a start indicates the start
+    of the string so that the function can calculate this without going before
+    the beginning of the string.
+    \param start The start of the string.
+    \param p The position in \a start that the function counts backslashes
+        preceding.
+    \return True if there are an odd number of backslashes preceding the
+        position \a p in the string \a start.
+*/</font>
+<font color="blue">int</font> is_backslashed<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>start, <font color="blue">const char</font> <font color="red">*</font>p<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x = <font color="blue">0</font>;
+
+    <font color="blue">while</font><font color="darkred">(</font>p &gt; start <font color="red">&amp;&amp; *</font><font color="darkred">(</font>--p<font color="darkred">)</font> == <font color="red">'\\'</font><font color="darkred">)</font> x ++;
+
+    <font color="blue">return</font> x % <font color="blue">2</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Shifts the string \a p to the left, deleting the first character (*p).
+    \param p The string to delete the first character from.
+*/</font>
+<font color="blue">void</font> remove_char<font color="darkred">(</font><font color="blue">char</font> <font color="red">*</font>p<font color="darkred">) {</font>
+    <font color="blue">for</font><font color="darkred">(</font> ; <font color="red">*</font>p; p++<font color="darkred">)</font> <font color="red">*</font>p = <font color="red">*</font><font color="darkred">(</font>p+<font color="blue">1</font><font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Returns true if the character \a c is a letter or an underscore (a "word"
+    character).
+    \param c The character to examine.
+    \return True if the character \a c is a word character: a letter or an
+        underscore.
+*/</font>
+<font color="blue">int</font> is_word<font color="darkred">(</font><font color="blue">int</font> c<font color="darkred">) {</font>
+    <font color="blue">return</font> c == <font color="red">'_'</font> || isalnum<font color="darkred">(</font>c<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Returns true if the character before \a p is a word character (by calling
+    is_word()); if p is the start of the string (equal to \a line), returns 0.
+    \param line The start of the string.
+    \param p The position in \a line to check the character before.
+    \return True if the character before \a p is a word character; false if p
+        is the start of the string.
+*/</font>
+<font color="blue">int</font> is_word_prev<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>line, <font color="blue">const char</font> <font color="red">*</font>p<font color="darkred">) {</font>
+    <font color="blue">return</font> p == line ? <font color="blue">0</font> : is_word<font color="darkred">(</font><font color="red">*</font><font color="darkred">(</font>p-<font color="blue">1</font><font color="darkred">))</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Removes shell-style (# to EOL) comments from the string \a s. Called to
+    strip comments from rules.
+    \param s The string to remove comments from.
+*/</font>
+<font color="blue">void</font> remove_comments<font color="darkred">(</font><font color="blue">char</font> <font color="red">*</font>s<font color="darkred">) {</font>
+    <font color="blue">char</font> <font color="red">*</font>p;
+
+    <font color="blue">for</font><font color="darkred">(</font>p = s; <font color="darkred">(</font>p = strchr<font color="darkred">(</font>p, <font color="red">'#'</font><font color="darkred">))</font>; p ++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!is_backslashed<font color="darkred">(</font>s, p<font color="darkred">)) {</font>
+            <font color="green">/*while(p &gt; s &amp;&amp; isspace(*(p-1))) p --;*/</font>
+            <font color="red">*</font>p = <font color="blue">0</font>;
+
+            <font color="blue">break</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Returns the position of the separator for a variable, or NULL if the passed
+    string is not a valid variable string.
+    \param s The string that contains the possible variable. It consists of
+        alphanumeric characters followed by an \c = followed by any other
+        characters.
+*/</font>
+<font color="blue">char</font> <font color="red">*</font>is_var<font color="darkred">(</font><font color="blue">char</font> <font color="red">*</font>s<font color="darkred">) {</font>
+    <font color="blue">char</font> <font color="red">*</font>p = s;
+
+    <font color="blue">while</font><font color="darkred">(</font><font color="red">*</font>p++<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!is_word<font color="darkred">(</font><font color="red">*</font>p<font color="darkred">)</font> <font color="red">&amp;&amp;</font> !isdigit<font color="darkred">(</font><font color="red">*</font>p<font color="darkred">)) {</font>
+            <font color="blue">if</font><font color="darkred">(</font><font color="red">*</font>p == <font color="red">'='</font><font color="darkred">) {</font>
+                <font color="blue">return</font> is_backslashed<font color="darkred">(</font>s, p<font color="darkred">)</font> ? <font color="blue">0</font> : p;
+            <font color="darkred">}</font>
+            <font color="blue">else return 0</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Returns true if s represents a filename which starts with "./" or ".\\".
+    \param s The filename to look at.
+    \return True if \a s starts with the current directory, "./" or ".\\".
+*/</font>
+<font color="blue">int</font> is_current_dir<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>s<font color="darkred">) {</font>
+    <font color="blue">return</font> <font color="red">*</font>s == <font color="red">'.'</font> <font color="red">&amp;&amp;</font> <font color="darkred">(</font>s<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]</font> == <font color="red">'/'</font> || s<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]</font> == <font color="red">'\\'</font><font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Prints \a len chars from \a *p to out. \a p is advanced to the next
+    character (*p+len).
+    \param p The string to advance and print.
+    \param len The number of characters from \a p to print/advance.
+    \param out The output file stream to write the characters to.
+*/</font>
+<font color="blue">void</font> print_chars<font color="darkred">(</font><font color="blue">char</font> <font color="red">**</font>p, <font color="darkblue">size_t</font> len, <font color="darkblue">FILE</font> <font color="red">*</font>out<font color="darkred">) {</font>
+    <font color="blue">while</font><font color="darkred">(</font>len --<font color="darkred">)</font> fputc<font color="darkred">(</font><font color="red">*</font><font color="darkred">(</font><font color="red">*</font>p<font color="darkred">)</font>++, out<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Adds a function to the list of type_func functions.
+    \param func The function list to add \a n to.
+    \param which The function number to add to \a func.
+    \param type The type of the function being added to the list.
+*/</font>
+<font color="blue">void</font> add_to_funclist<font color="darkred">(</font><font color="blue">struct</font> funclist_t <font color="red">*</font>func, <font color="darkblue">size_t</font> which, <font color="blue">enum</font> type_t type<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> <font color="red">*</font>f = realloc<font color="darkred">(</font>func-&gt;which, <font color="darkred">(</font>func-&gt;number + <font color="blue">1</font><font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">))</font>;
+    <font color="blue">enum</font> type_t <font color="red">*</font>t;
+
+    <font color="blue">if</font><font color="darkred">(</font>!f<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+    func-&gt;which = f;
+
+    t = realloc<font color="darkred">(</font>func-&gt;type, <font color="darkred">(</font>func-&gt;number + <font color="blue">1</font><font color="darkred">)</font> <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">enum</font> type_t<font color="darkred">))</font>;
+    <font color="blue">if</font><font color="darkred">(</font>!t<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+    func-&gt;type = t;
+
+    func-&gt;which<font color="darkred">[</font>func-&gt;number<font color="darkred">]</font> = which;
+    func-&gt;type<font color="darkred">[</font>func-&gt;number<font color="darkred">]</font> = type;
+
+    func-&gt;number ++;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Removes the most recent function (on the bottom) from the function list
+    \a func. (The function list stores the offset of the rule within the rules
+    structure, not a function pointer.)
+    \param func The function list to remove a function from.
+*/</font>
+<font color="blue">void</font> remove_from_funclist<font color="darkred">(</font><font color="blue">struct</font> funclist_t <font color="red">*</font>func<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> <font color="red">*</font>f;
+    <font color="blue">enum</font> type_t <font color="red">*</font>t;
+
+    <font color="blue">if</font><font color="darkred">(</font>func-&gt;number &gt; <font color="blue">1</font><font color="darkred">) {</font>
+        func-&gt;number --;
+
+        f = realloc<font color="darkred">(</font>func-&gt;which, func-&gt;number <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="darkblue">size_t</font><font color="darkred">))</font>;
+        <font color="blue">if</font><font color="darkred">(</font>!f<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+        func-&gt;which = f;
+
+        t = realloc<font color="darkred">(</font>func-&gt;type, func-&gt;number <font color="red">*</font> <font color="blue">sizeof</font><font color="darkred">(</font><font color="blue">enum</font> type_t<font color="darkred">))</font>;
+        <font color="blue">if</font><font color="darkred">(</font>!t<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+        func-&gt;type = t;
+    <font color="darkred">}</font>
+    <font color="blue">else</font> <font color="darkred">{</font>
+        free<font color="darkred">(</font>func-&gt;which<font color="darkred">)</font>;
+        free<font color="darkred">(</font>func-&gt;type<font color="darkred">)</font>;
+        func-&gt;which = <font color="blue">0</font>;
+        func-&gt;type = <font color="blue">0</font>;
+        func-&gt;number = <font color="blue">0</font>;
+    <font color="darkred">}</font>
+
+    func-&gt;nest = <font color="blue">1</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Adds a whitespace character to the list of whitespace characters.
+    \param list The structure containing the list of whitespace characters.
+    \param c The character to add.
+*/</font>
+<font color="blue">void</font> add_ws_rulelist<font color="darkred">(</font><font color="blue">struct</font> rulelist_t <font color="red">*</font>list, <font color="blue">char</font> c<font color="darkred">) {</font>
+    <font color="blue">char</font> <font color="red">*</font>p;
+
+    p = realloc<font color="darkred">(</font>list-&gt;ws, list-&gt;wslen + <font color="blue">2</font><font color="darkred">)</font>;
+    <font color="blue">if</font><font color="darkred">(</font>!p<font color="darkred">)</font> out_of_memory<font color="darkred">(</font>__FILE__, __LINE__<font color="darkred">)</font>;
+    list-&gt;ws = p;
+
+    list-&gt;ws<font color="darkred">[</font>list-&gt;wslen ++<font color="darkred">]</font> = c;
+    list-&gt;ws<font color="darkred">[</font>list-&gt;wslen<font color="darkred">]</font> = <font color="blue">0</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Prints the whitespace in the whitespace list (if any), clearing the list.
+    \param list The structure containing the list of whitespace characters.
+    \param out The file stream to print the characters to.
+*/</font>
+<font color="blue">void</font> print_ws_rulelist<font color="darkred">(</font><font color="blue">struct</font> rulelist_t <font color="red">*</font>list, <font color="darkblue">FILE</font> <font color="red">*</font>out<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>list-&gt;ws<font color="darkred">) {</font>
+        fputs<font color="darkred">(</font>list-&gt;ws, out<font color="darkred">)</font>;
+
+        free<font color="darkred">(</font>list-&gt;ws<font color="darkred">)</font>;
+        list-&gt;ws = <font color="blue">0</font>;
+        list-&gt;wslen = <font color="blue">0</font>;
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Starts a tag, ignoring tags of the same kind in sequence. That is, if two
+    keywords with the same precede-with occur in a row, don't close the tag
+    only to start it again.
+    \param from The text to print before (now) if the previous tag wasn't the
+        same as it.
+    \param to The text to print after if \a from doesn't match list-&gt;from.
+    \param list The structure containing the previous tag.
+    \param out The output file stream to write everything to.
+*/</font>
+<font color="blue">void</font> append_rulelist<font color="darkred">(</font><font color="blue">const char</font> <font color="red">*</font>from, <font color="blue">const char</font> <font color="red">*</font>to, <font color="blue">struct</font> rulelist_t <font color="red">*</font>list,
+    <font color="darkblue">FILE</font> <font color="red">*</font>out<font color="darkred">) {</font>
+
+    <font color="blue">if</font><font color="darkred">(</font>!from<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>list-&gt;to<font color="darkred">) {</font>
+            fputs<font color="darkred">(</font>list-&gt;to, out<font color="darkred">)</font>;
+            list-&gt;to = <font color="blue">0</font>;
+            list-&gt;from = <font color="blue">0</font>;
+
+            print_ws_rulelist<font color="darkred">(</font>list, out<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+    <font color="blue">else if</font><font color="darkred">(</font>!list-&gt;from || strcmp<font color="darkred">(</font>from, list-&gt;from<font color="darkred">)) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>list-&gt;to<font color="darkred">)</font> fputs<font color="darkred">(</font>list-&gt;to, out<font color="darkred">)</font>;
+
+        print_ws_rulelist<font color="darkred">(</font>list, out<font color="darkred">)</font>;
+
+        fputs<font color="darkred">(</font>from, out<font color="darkred">)</font>;
+        list-&gt;from = from;
+        list-&gt;to = to;
+    <font color="darkred">}</font>
+    <font color="blue">else</font> print_ws_rulelist<font color="darkred">(</font>list, out<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="darkgreen">/*! Removes the newline characters, if any, off of the end of \a str. \a flen
+    is adjusted accordingly. (Newline characters are '\\n' and '\\r', to
+    support CRLF newlines under UNIX systems.)
+    \param str The string to remove newline characters from the end of.
+    \param flen The length of the string \a str, decreased with each character
+        removed.
+*/</font>
+<font color="blue">void</font> chomp_newline<font color="darkred">(</font><font color="blue">char</font> <font color="red">*</font>str, <font color="darkblue">size_t</font> <font color="red">*</font>flen<font color="darkred">) {</font>
+    <font color="blue">while</font><font color="darkred">(</font><font color="red">*</font>flen <font color="red">&amp;&amp;</font> <font color="darkred">(</font>str<font color="darkred">[</font><font color="red">*</font>flen-<font color="blue">1</font><font color="darkred">]</font> == <font color="red">'\n'</font> || str<font color="darkred">[</font><font color="red">*</font>flen-<font color="blue">1</font><font color="darkred">]</font> == <font color="red">'\r'</font><font color="darkred">)) {</font>
+        str<font color="darkred">[</font>--<font color="darkred">(</font><font color="red">*</font>flen<font color="darkred">)]</font> = <font color="blue">0</font>;
+    <font color="darkred">}</font>
+<font color="darkred">}</font>
+
+<font color="green">/*--------------------------------------------*\
+ | type_func functions which implement rules. |
+\*--------------------------------------------*/</font>
+
+<font color="blue">int</font> type_keyword<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>!tf-&gt;iw <font color="red">&amp;&amp;</font> !is_word<font color="darkred">((</font><font color="red">*</font>tf-&gt;p<font color="darkred">)[</font>rule-&gt;data.len<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]])) {</font>
+        <font color="blue">return</font> type_midword<font color="darkred">(</font>rule, tf<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="blue">int</font> type_midword<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="darkblue">size_t</font> x;
+
+    <font color="blue">if</font><font color="darkred">(</font>!strncmp<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>, <font color="red">*</font>tf-&gt;p, rule-&gt;data.len<font color="darkred">[</font><font color="blue">0</font><font color="darkred">])) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!tf-&gt;func.number<font color="darkred">) {</font>
+            append_rulelist<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]</font>,
+                rule-&gt;data.data<font color="darkred">[</font>rule-&gt;data.number-<font color="blue">1</font><font color="darkred">]</font>, tf-&gt;list, tf-&gt;out<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+
+        <font color="blue">if</font><font color="darkred">(</font>rule-&gt;data.number == <font color="blue">3</font><font color="darkred">) {</font>
+            print_chars<font color="darkred">(</font>tf-&gt;p, rule-&gt;data.len<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+        <font color="blue">else</font> <font color="darkred">{</font>
+            <font color="blue">for</font><font color="darkred">(</font>x = <font color="blue">0</font>; x &lt; rule-&gt;data.len<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>; x ++<font color="darkred">) {</font>
+                <font color="darkred">(</font><font color="red">*</font>tf-&gt;p<font color="darkred">)</font>++;
+            <font color="darkred">}</font>
+
+            fputs<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">2</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+
+        <font color="blue">return 1</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="blue">int</font> type_comment_end<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>rule-&gt;data.number == <font color="blue">3</font><font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>tf-&gt;type == TYPE_COMMENT || tf-&gt;type == TYPE_NESTCOM<font color="darkred">) {</font>
+            <font color="blue">if</font><font color="darkred">((</font><font color="red">**</font>tf-&gt;p == <font color="red">'\n'</font> || <font color="red">**</font>tf-&gt;p == <font color="red">'\r'</font><font color="darkred">)</font>
+                <font color="red">&amp;&amp;</font> !is_backslashed<font color="darkred">(</font><font color="red">*</font>tf-&gt;p - tf-&gt;n, <font color="red">*</font>tf-&gt;p<font color="darkred">)) {</font>
+
+                fputs<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">2</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+
+                <font color="blue">return</font> -<font color="blue">1</font>;
+            <font color="darkred">}</font>
+        <font color="darkred">}</font>
+        <font color="blue">else if</font><font color="darkred">(</font>!strncmp<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>, <font color="red">*</font>tf-&gt;p, rule-&gt;data.len<font color="darkred">[</font><font color="blue">0</font><font color="darkred">])) {</font>
+            print_chars<font color="darkred">(</font>tf-&gt;p, rule-&gt;data.len<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+
+            <font color="blue">if</font><font color="darkred">(</font>tf-&gt;func.number == <font color="blue">1</font><font color="darkred">)</font> fputs<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">2</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+
+            <font color="blue">return</font> -<font color="blue">1</font>;
+        <font color="darkred">}</font>
+    <font color="darkred">}</font>
+    <font color="blue">else if</font><font color="darkred">(</font>!strncmp<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]</font>, <font color="red">*</font>tf-&gt;p, rule-&gt;data.len<font color="darkred">[</font><font color="blue">1</font><font color="darkred">])) {</font>
+        print_chars<font color="darkred">(</font>tf-&gt;p, rule-&gt;data.len<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+
+        <font color="blue">if</font><font color="darkred">(</font>tf-&gt;type != TYPE_STRING || tf-&gt;func.number == <font color="blue">1</font><font color="darkred">) {</font>
+            fputs<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">3</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+
+        <font color="blue">return</font> -<font color="blue">1</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">if</font><font color="darkred">(</font>tf-&gt;pos <font color="red">&amp;</font> POS_END<font color="darkred">) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>tf-&gt;type != TYPE_STRING || tf-&gt;func.number == <font color="blue">1</font><font color="darkred">) {</font>
+            fputs<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font>rule-&gt;data.number-<font color="blue">1</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+
+        <font color="blue">return</font> -<font color="blue">1</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="blue">int</font> type_comment<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>tf-&gt;func.number <font color="red">&amp;&amp;</font> tf-&gt;func.which<font color="darkred">[</font>tf-&gt;func.number-<font color="blue">1</font><font color="darkred">]</font> == tf-&gt;number
+        <font color="red">&amp;&amp;</font> tf-&gt;func.type<font color="darkred">[</font>tf-&gt;func.number-<font color="blue">1</font><font color="darkred">]</font> == tf-&gt;type<font color="darkred">) {</font>
+
+        <font color="blue">if</font><font color="darkred">(</font>type_comment_end<font color="darkred">(</font>rule, tf<font color="darkred">))</font> <font color="blue">return</font> -<font color="blue">1</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">if</font><font color="darkred">(</font>tf-&gt;func.nest
+        <font color="red">&amp;&amp;</font> !strncmp<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>, <font color="red">*</font>tf-&gt;p, rule-&gt;data.len<font color="darkred">[</font><font color="blue">0</font><font color="darkred">])) {</font>
+
+        append_rulelist<font color="darkred">(</font><font color="blue">0</font>, <font color="blue">0</font>, tf-&gt;list, tf-&gt;out<font color="darkred">)</font>;
+
+        <font color="blue">if</font><font color="darkred">(</font>tf-&gt;type != TYPE_STRING || !tf-&gt;func.number<font color="darkred">) {</font>
+            fputs<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font>rule-&gt;data.number-<font color="blue">2</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+
+        print_chars<font color="darkred">(</font>tf-&gt;p, rule-&gt;data.len<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+
+        add_to_funclist<font color="darkred">(</font><font color="red">&amp;</font>tf-&gt;func, tf-&gt;number, tf-&gt;type<font color="darkred">)</font>;
+        tf-&gt;func.nest = <font color="darkred">(</font>tf-&gt;type == TYPE_NESTCOM<font color="darkred">)</font>;
+
+        <font color="blue">return 1</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="blue">int</font> type_string<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>tf-&gt;func.nest || !is_backslashed<font color="darkred">(</font><font color="red">*</font>tf-&gt;p - tf-&gt;n, <font color="red">*</font>tf-&gt;p<font color="darkred">)) {</font>
+        <font color="blue">return</font> type_comment<font color="darkred">(</font>rule, tf<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="blue">int</font> type_nestcom<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">return</font> type_comment<font color="darkred">(</font>rule, tf<font color="darkred">)</font>;
+<font color="darkred">}</font>
+
+<font color="blue">int</font> type_number<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>!tf-&gt;iw <font color="red">&amp;&amp;</font> is_number<font color="darkred">(</font><font color="red">*</font>tf-&gt;p<font color="darkred">)) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!tf-&gt;func.number<font color="darkred">) {</font>
+            append_rulelist<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>, rule-&gt;data.data<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]</font>, tf-&gt;list,
+                tf-&gt;out<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+
+        print_number<font color="darkred">(</font>tf-&gt;p, tf-&gt;out<font color="darkred">)</font>;
+
+        <font color="blue">return 1</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="blue">int</font> type_fpnumber<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>!tf-&gt;iw <font color="red">&amp;&amp;</font> is_fpnumber<font color="darkred">(</font><font color="red">*</font>tf-&gt;p<font color="darkred">)) {</font>
+        <font color="blue">if</font><font color="darkred">(</font>!tf-&gt;func.number<font color="darkred">) {</font>
+            append_rulelist<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>, rule-&gt;data.data<font color="darkred">[</font><font color="blue">1</font><font color="darkred">]</font>, tf-&gt;list,
+                tf-&gt;out<font color="darkred">)</font>;
+        <font color="darkred">}</font>
+
+        print_number<font color="darkred">(</font>tf-&gt;p, tf-&gt;out<font color="darkred">)</font>;
+
+        <font color="blue">return 1</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="blue">int</font> type_start<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>tf-&gt;pos <font color="red">&amp;</font> POS_START <font color="red">&amp;&amp;</font> !tf-&gt;n<font color="darkred">) {</font>
+        tf-&gt;pos <font color="red">&amp;</font>= ~POS_START;
+        fputs<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+
+<font color="blue">int</font> type_end<font color="darkred">(</font><font color="blue">struct</font> onerule_t <font color="red">*</font>rule, <font color="blue">struct</font> typefunc_t <font color="red">*</font>tf<font color="darkred">) {</font>
+    <font color="blue">if</font><font color="darkred">(</font>tf-&gt;pos <font color="red">&amp;</font> POS_END <font color="red">&amp;&amp;</font> !<font color="red">**</font>tf-&gt;p<font color="darkred">) {</font>
+        tf-&gt;pos <font color="red">&amp;</font>= ~POS_END;
+        fputs<font color="darkred">(</font>rule-&gt;data.data<font color="darkred">[</font><font color="blue">0</font><font color="darkred">]</font>, tf-&gt;out<font color="darkred">)</font>;
+    <font color="darkred">}</font>
+
+    <font color="blue">return 0</font>;
+<font color="darkred">}</font>
+</pre></body></html>

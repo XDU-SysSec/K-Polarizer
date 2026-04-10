@@ -1,0 +1,2 @@
+This package requires the system default gcc to produce PIE for testing
+purpose. Using -spec might work, but specifying CFLAGS directly does not work.
