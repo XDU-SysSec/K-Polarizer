@@ -2,7 +2,7 @@
 
 ### Overview
 
-This anonymous repository accompanies our paper: **One Size Does Fit All: Kernel-Assisted Fine-Grained Debloating and Layout Randomization for Shared Libraries.** 
+This repository accompanies our paper: **One Size Does Fit All: Kernel-Assisted Fine-Grained Debloating and Layout Randomization for Shared Libraries (published in ICSE '26).** 
 
 ### Prerequisite
 
